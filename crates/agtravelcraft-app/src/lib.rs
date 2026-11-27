@@ -13,7 +13,7 @@ use egui::{Color32, RichText};
 
 use crate::help::HelpTab;
 use crate::llm::{ChatPersonality, ChatSession, LlmProvider};
-use crate::skins::{Palette, SkinId};
+use crate::skins::{BackdropStyle, Palette, SkinId};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum ActiveTab {
@@ -35,6 +35,7 @@ pub enum RightDockTab {
 pub struct AgTravelCraftView {
     pub store: TravelStore,
     pub skin: SkinId,
+    pub backdrop: BackdropStyle,
     pub active_tab: ActiveTab,
     pub show_left_sidebar: bool,
     pub show_right_sidebar: bool,
@@ -59,6 +60,7 @@ impl AgTravelCraftView {
         let mut view = Self {
             store,
             skin: SkinId::BattleConsole,
+            backdrop: SkinId::BattleConsole.recommended_backdrop(),
             active_tab: ActiveTab::Voyages,
             show_left_sidebar: true,
             show_right_sidebar: true,
@@ -79,6 +81,12 @@ impl AgTravelCraftView {
         };
         view.refresh();
         view
+    }
+
+    pub fn set_skin(&mut self, ctx: &egui::Context, skin: SkinId) {
+        self.skin = skin;
+        self.backdrop = skin.recommended_backdrop();
+        Palette::apply_visuals(ctx, skin);
     }
 
     pub fn refresh(&mut self) {
@@ -259,6 +267,9 @@ impl AgTravelCraftView {
         }
 
         egui::CentralPanel::default().show(ui, |ui| {
+            let time_sec = ctx.input(|i| i.time as f32);
+            skins::paint_backdrop(ui.painter(), ui.max_rect(), pal, self.backdrop, time_sec);
+
             let mut dismiss_banner = false;
             if let Some((msg, is_err)) = &self.banner_message {
                 let color = if *is_err { pal.danger } else { pal.ok };
@@ -368,76 +379,69 @@ impl AgTravelCraftView {
                     continue;
                 }
                 let selected = self.selected_voyage_id.as_deref() == Some(v.voyage_id.as_str());
-                let frame_stroke = if selected {
-                    egui::Stroke::new(1.5, pal.accent)
-                } else {
-                    egui::Stroke::new(1.0, Color32::from_gray(70))
-                };
-                egui::Frame::group(ui.style())
-                    .stroke(frame_stroke)
-                    .show(ui, |ui| {
-                        ui.horizontal(|ui| {
-                            if ui
-                                .selectable_label(
-                                    selected,
-                                    RichText::new(format!(
-                                        "{} : {} -> {}",
-                                        v.agent_id, v.home_origin, v.destination_council
-                                    ))
-                                    .strong(),
-                                )
-                                .clicked()
-                            {
-                                self.selected_voyage_id = Some(v.voyage_id.clone());
-                            }
-                            ui.label(RichText::new(format!("[{}]", v.state)).color(pal.accent));
-                            ui.label(format!("Hops: {}/{}", v.hop_count, v.max_hops));
-                        });
-                        ui.label(format!("Purpose: {}", v.purpose));
-                        ui.label(
-                            RichText::new(format!(
-                                "Passport Sig: {}...",
-                                &v.passport.signature[..16.min(v.passport.signature.len())]
-                            ))
-                            .small()
-                            .color(pal.text_muted),
-                        );
-
-                        if !v.passport.transit_stamps.is_empty() {
-                            ui.collapsing(
-                                format!("Transit Stamps ({})", v.passport.transit_stamps.len()),
-                                |ui| {
-                                    for st in &v.passport.transit_stamps {
-                                        ui.label(format!(
-                                            "Hop {}: {} | sig={}...",
-                                            st.hop_index,
-                                            st.waystation_id,
-                                            &st.stamp_signature[..12.min(st.stamp_signature.len())]
-                                        ));
-                                    }
-                                },
-                            );
+                skins::decorated_card(ui, pal, selected, |ui| {
+                    ui.horizontal(|ui| {
+                        if ui
+                            .selectable_label(
+                                selected,
+                                RichText::new(format!(
+                                    "{} : {} -> {}",
+                                    v.agent_id, v.home_origin, v.destination_council
+                                ))
+                                .strong(),
+                            )
+                            .clicked()
+                        {
+                            self.selected_voyage_id = Some(v.voyage_id.clone());
                         }
-
-                        if let Some(m) = &v.minutes {
-                            ui.collapsing(
-                                format!(
-                                    "Council Minutes: {} ({} turns, {})",
-                                    m.council_id,
-                                    m.turns.len(),
-                                    m.adjourned_reason
-                                ),
-                                |ui| {
-                                    for t in &m.turns {
-                                        ui.label(format!(
-                                            "R{} [{}@{}]: {}",
-                                            t.round, t.speaker, t.origin, t.body
-                                        ));
-                                    }
-                                },
-                            );
-                        }
+                        ui.label(RichText::new(format!("[{}]", v.state)).color(pal.accent));
+                        ui.label(format!("Hops: {}/{}", v.hop_count, v.max_hops));
                     });
+                    ui.label(format!("Purpose: {}", v.purpose));
+                    ui.label(
+                        RichText::new(format!(
+                            "Passport Sig: {}...",
+                            &v.passport.signature[..16.min(v.passport.signature.len())]
+                        ))
+                        .small()
+                        .color(pal.text_muted),
+                    );
+
+                    if !v.passport.transit_stamps.is_empty() {
+                        ui.collapsing(
+                            format!("Transit Stamps ({})", v.passport.transit_stamps.len()),
+                            |ui| {
+                                for st in &v.passport.transit_stamps {
+                                    ui.label(format!(
+                                        "Hop {}: {} | sig={}...",
+                                        st.hop_index,
+                                        st.waystation_id,
+                                        &st.stamp_signature[..12.min(st.stamp_signature.len())]
+                                    ));
+                                }
+                            },
+                        );
+                    }
+
+                    if let Some(m) = &v.minutes {
+                        ui.collapsing(
+                            format!(
+                                "Council Minutes: {} ({} turns, {})",
+                                m.council_id,
+                                m.turns.len(),
+                                m.adjourned_reason
+                            ),
+                            |ui| {
+                                for t in &m.turns {
+                                    ui.label(format!(
+                                        "R{} [{}@{}]: {}",
+                                        t.round, t.speaker, t.origin, t.body
+                                    ));
+                                }
+                            },
+                        );
+                    }
+                });
                 ui.add_space(6.0);
             }
         });
@@ -520,7 +524,7 @@ impl AgTravelCraftView {
 
         egui::ScrollArea::vertical().show(ui, |ui| {
             for c in &self.customs {
-                egui::Frame::group(ui.style()).show(ui, |ui| {
+                skins::decorated_card(ui, pal, !c.injection_flags.is_empty(), |ui| {
                     ui.horizontal(|ui| {
                         ui.label(RichText::new(&c.council_id).strong());
                         ui.label(RichText::new(format!("taint={}", c.taint)).color(pal.warn));
@@ -644,15 +648,26 @@ impl AgTravelCraftView {
         ui.heading("Trade-Dress Skin & Local-First LLM Settings");
         ui.separator();
 
-        ui.label(RichText::new("Studio Skin (9 Presets)").strong());
+        ui.label(RichText::new("Studio Skin (9 DJCraft Presets)").strong());
         ui.horizontal_wrapped(|ui| {
             for skin in SkinId::ALL {
                 if ui
                     .selectable_label(self.skin == skin, skin.label())
                     .clicked()
                 {
-                    self.skin = skin;
-                    Palette::apply_visuals(ctx, skin);
+                    self.set_skin(ctx, skin);
+                }
+            }
+        });
+        ui.add_space(4.0);
+        ui.label(RichText::new("Backdrop Pattern (6 DJCraft Patterns)").strong());
+        ui.horizontal_wrapped(|ui| {
+            for bg in BackdropStyle::ALL {
+                if ui
+                    .selectable_label(self.backdrop == bg, bg.label())
+                    .clicked()
+                {
+                    self.backdrop = bg;
                 }
             }
         });

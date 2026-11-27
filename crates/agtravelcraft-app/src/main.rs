@@ -21,32 +21,48 @@ impl AgTravelCraftApp {
     }
 
     fn apply_shortcuts(&mut self, ctx: &egui::Context) {
-        let mut zoom_delta = 0.0_f32;
-        ctx.input(|i| {
-            if i.modifiers.ctrl && i.smooth_scroll_delta.y.abs() > 0.0 {
-                zoom_delta = if i.smooth_scroll_delta.y > 0.0 {
-                    0.1
-                } else {
-                    -0.1
-                };
-            }
-            if i.modifiers.ctrl && i.key_pressed(egui::Key::Num0) {
-                self.zoom = 1.0;
-            }
-            if i.modifiers.ctrl && i.key_pressed(egui::Key::J) {
-                self.view.show_right_sidebar = !self.view.show_right_sidebar;
-            }
-            if i.modifiers.ctrl && i.key_pressed(egui::Key::B) {
-                self.view.show_tab_bar = !self.view.show_tab_bar;
-            }
-            if i.key_pressed(egui::Key::F1) {
-                self.view.help_open = !self.view.help_open;
-            }
+        // Ctrl + MouseWheel zoom (DJCraft pattern: use ctx.set_zoom_factor, NEVER set_pixels_per_point)
+        let (scroll_delta, k_zoom0, k_zoom_in, k_zoom_out, k_j, k_b, k_f1) = ctx.input(|i| {
+            let ctrl = i.modifiers.ctrl || i.modifiers.command;
+            let wheel = if ctrl { i.smooth_scroll_delta.y } else { 0.0 };
+            (
+                wheel,
+                ctrl && i.key_pressed(egui::Key::Num0),
+                ctrl && (i.key_pressed(egui::Key::Plus) || i.key_pressed(egui::Key::Equals)),
+                ctrl && i.key_pressed(egui::Key::Minus),
+                ctrl && i.key_pressed(egui::Key::J),
+                ctrl && i.key_pressed(egui::Key::B),
+                i.key_pressed(egui::Key::F1),
+            )
         });
-        if zoom_delta.abs() > 0.0 {
-            self.zoom = (self.zoom + zoom_delta).clamp(0.75, 2.0);
+
+        if scroll_delta.abs() > 0.1 {
+            let step = if scroll_delta > 0.0 {
+                1.1_f32
+            } else {
+                1.0 / 1.1_f32
+            };
+            self.zoom = (self.zoom * step).clamp(0.75, 2.0);
         }
-        ctx.set_pixels_per_point(self.zoom);
+        if k_zoom_in {
+            self.zoom = (self.zoom * 1.1).clamp(0.75, 2.0);
+        }
+        if k_zoom_out {
+            self.zoom = (self.zoom / 1.1).clamp(0.75, 2.0);
+        }
+        if k_zoom0 {
+            self.zoom = 1.0;
+        }
+        if k_j {
+            self.view.show_right_sidebar = !self.view.show_right_sidebar;
+        }
+        if k_b {
+            self.view.show_tab_bar = !self.view.show_tab_bar;
+        }
+        if k_f1 {
+            self.view.help_open = !self.view.help_open;
+        }
+        ctx.set_zoom_factor(self.zoom);
     }
 
     fn render_menu_bar(&mut self, ctx: &egui::Context, ui: &mut egui::Ui) {
@@ -108,8 +124,7 @@ impl AgTravelCraftApp {
                                 .selectable_label(self.view.skin == skin, skin.label())
                                 .clicked()
                             {
-                                self.view.skin = skin;
-                                Palette::apply_visuals(ctx, skin);
+                                self.view.set_skin(ctx, skin);
                                 ui.close();
                             }
                         }
