@@ -34,6 +34,51 @@ impl LlmProvider {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum ChatPersonality {
+    #[default]
+    DiplomaticCourier,
+    TokyoNekomimiArchitect,
+    ViennaCustomsInspector,
+    ConcisePeer,
+}
+
+impl ChatPersonality {
+    pub const ALL: [Self; 4] = [
+        Self::DiplomaticCourier,
+        Self::TokyoNekomimiArchitect,
+        Self::ViennaCustomsInspector,
+        Self::ConcisePeer,
+    ];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::DiplomaticCourier => "Diplomatic Courier",
+            Self::TokyoNekomimiArchitect => "Tokyo Nekomimi Gal",
+            Self::ViennaCustomsInspector => "Vienna Customs Hawk",
+            Self::ConcisePeer => "Concise Peer",
+        }
+    }
+
+    pub fn prompt_directive(self) -> &'static str {
+        match self {
+            Self::DiplomaticCourier => {
+                "Persona: Calm, precise Viennese Diplomatic Courier. Summarize passports, transit stamps, and council minutes clearly."
+            }
+            Self::TokyoNekomimiArchitect => {
+                "Persona: Bright, technically sharp Tokyo CraftApp nekomimi engineer gal hosting the Diplomatic Teahouse. Keep answers playful yet grounded in real data and red lines."
+            }
+            Self::ViennaCustomsInspector => {
+                "Persona: Strict, zero-trust Vienna Customs security inspector. Prioritize prompt-injection flags, red line enforcement, and taint quarantine analysis."
+            }
+            Self::ConcisePeer => {
+                "Persona: Ultra-terse senior engineering peer. Bullet points only, zero fluff."
+            }
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LlmSettings {
     pub provider: LlmProvider,
@@ -43,6 +88,8 @@ pub struct LlmSettings {
     pub num_ctx: u32,
     pub api_key_env: String,
     pub extra_instructions: String,
+    #[serde(default)]
+    pub personality: ChatPersonality,
 }
 
 impl Default for LlmSettings {
@@ -55,6 +102,7 @@ impl Default for LlmSettings {
             num_ctx: 16384,
             api_key_env: "OPENAI_API_KEY".to_string(),
             extra_instructions: String::new(),
+            personality: ChatPersonality::default(),
         }
     }
 }
@@ -128,7 +176,8 @@ impl ChatSession {
         selection: &str,
     ) -> String {
         let mut out = format!(
-            "You are the embedded assistant for {app_name}. Answer strictly from the provided skills, live status, and selection. Say when you do not know. Never invent tool names or numbers.\n\n## Bundled Skills\n{skills}\n\n## Live Status\n{live_status}\n"
+            "You are the embedded assistant for {app_name}. Answer strictly from the provided skills, live status, and selection. Say when you do not know. Never invent tool names or numbers.\n\n## Active Personality\n{}\n\n## Bundled Skills\n{skills}\n\n## Live Status\n{live_status}\n",
+            self.settings.personality.prompt_directive()
         );
         if !selection.is_empty() {
             out.push_str("\n## Selected Item\n");
@@ -141,6 +190,56 @@ impl ChatSession {
             out.push('\n');
         }
         out
+    }
+
+    pub fn export_markdown(&self, app_name: &str) -> String {
+        let mut out = format!(
+            "# {app_name} AI Chat Transcript\n\n- **Personality:** {}\n- **Model:** {} ({})\n- **Messages:** {}\n\n---\n\n",
+            self.settings.personality.label(),
+            self.settings.model,
+            self.settings.provider.label(),
+            self.messages.len()
+        );
+        for msg in &self.messages {
+            let heading = if msg.is_error {
+                "ERROR"
+            } else if msg.role == "user" {
+                "User"
+            } else {
+                "Assistant"
+            };
+            out.push_str(&format!("### {heading}\n\n{}\n\n", msg.content));
+        }
+        out
+    }
+
+    pub fn export_to_file(&self, app_folder: &str, app_name: &str) -> Result<PathBuf, String> {
+        let ts = chrono::Utc::now().format("%Y%m%d_%H%M%S");
+        let dir = if let Ok(local) = std::env::var("LOCALAPPDATA") {
+            PathBuf::from(local).join(app_folder).join("chats")
+        } else {
+            PathBuf::from("chats")
+        };
+        std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+        let path = dir.join(format!("chat_{ts}.md"));
+        std::fs::write(&path, self.export_markdown(app_name)).map_err(|e| e.to_string())?;
+        Ok(path)
+    }
+
+    pub fn retry_last(&mut self, preprompt: String) {
+        if self.busy {
+            return;
+        }
+        if let Some(last_user) = self
+            .messages
+            .iter()
+            .rev()
+            .find(|m| m.role == "user" && !m.is_error)
+            .map(|m| m.content.clone())
+        {
+            self.draft = last_user;
+            self.send(preprompt);
+        }
     }
 
     pub fn send(&mut self, preprompt: String) {

@@ -12,7 +12,7 @@ use agtravelcraft_core::store::TravelStore;
 use egui::{Color32, RichText};
 
 use crate::help::HelpTab;
-use crate::llm::{ChatSession, LlmProvider};
+use crate::llm::{ChatPersonality, ChatSession, LlmProvider};
 use crate::skins::{Palette, SkinId};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -242,6 +242,7 @@ impl AgTravelCraftView {
             egui::Panel::left("left_nav")
                 .resizable(true)
                 .default_size(230.0)
+                .size_range(160.0..=380.0)
                 .show(ui, |ui| {
                     self.render_left_sidebar(ui, pal);
                 });
@@ -250,9 +251,10 @@ impl AgTravelCraftView {
         if self.show_right_sidebar {
             egui::Panel::right("right_dock")
                 .resizable(true)
-                .default_size(320.0)
+                .default_size(340.0)
+                .size_range(240.0..=640.0)
                 .show(ui, |ui| {
-                    self.render_right_sidebar(ui, pal);
+                    self.render_right_sidebar(ctx, ui, pal);
                 });
         }
 
@@ -656,6 +658,24 @@ impl AgTravelCraftView {
         });
         ui.separator();
 
+        ui.label(RichText::new("AI Chat Personality").strong());
+        ui.horizontal_wrapped(|ui| {
+            for persona in ChatPersonality::ALL {
+                if ui
+                    .selectable_label(self.chat.settings.personality == persona, persona.label())
+                    .clicked()
+                {
+                    self.chat.settings.personality = persona;
+                }
+            }
+        });
+        ui.label(
+            RichText::new(self.chat.settings.personality.prompt_directive())
+                .small()
+                .color(pal.text_muted),
+        );
+        ui.separator();
+
         ui.label(RichText::new("AI Chat Provider").strong());
         ui.horizontal(|ui| {
             for prov in [LlmProvider::Ollama, LlmProvider::OpenAiCompatible] {
@@ -717,10 +737,31 @@ impl AgTravelCraftView {
         ui.label(badge);
     }
 
-    fn render_right_sidebar(&mut self, ui: &mut egui::Ui, pal: Palette) {
+    fn build_live_preprompt(&self) -> String {
+        let skills_text = list_skills()
+            .into_iter()
+            .map(|s| s.content)
+            .collect::<Vec<_>>()
+            .join("\n\n");
+        let status_json =
+            serde_json::to_string_pretty(&self.status).unwrap_or_else(|_| "{}".to_string());
+        let sel = self
+            .selected_voyage_id
+            .as_deref()
+            .and_then(|id| self.voyages.iter().find(|v| v.voyage_id == id))
+            .and_then(|v| serde_json::to_string_pretty(v).ok())
+            .unwrap_or_default();
+        self.chat
+            .build_preprompt("AgTravelCraft", &skills_text, &status_json, &sel)
+    }
+
+    fn render_right_sidebar(&mut self, ctx: &egui::Context, ui: &mut egui::Ui, pal: Palette) {
         ui.horizontal(|ui| {
             if ui
-                .selectable_label(self.right_dock_tab == RightDockTab::AiChat, "AI Chat")
+                .selectable_label(
+                    self.right_dock_tab == RightDockTab::AiChat,
+                    format!("AI Chat ({})", self.chat.messages.len()),
+                )
                 .clicked()
             {
                 self.right_dock_tab = RightDockTab::AiChat;
@@ -736,17 +777,85 @@ impl AgTravelCraftView {
 
         match self.right_dock_tab {
             RightDockTab::AiChat => {
+                // Personality quick switcher + Chat++ toolbar
+                ui.horizontal_wrapped(|ui| {
+                    egui::ComboBox::from_id_salt("chat_personality_combo")
+                        .selected_text(self.chat.settings.personality.label())
+                        .width(148.0)
+                        .show_ui(ui, |ui| {
+                            for persona in ChatPersonality::ALL {
+                                ui.selectable_value(
+                                    &mut self.chat.settings.personality,
+                                    persona,
+                                    persona.label(),
+                                );
+                            }
+                        });
+                    if ui
+                        .small_button("Export .md")
+                        .on_hover_text("Save chat transcript as Markdown file")
+                        .clicked()
+                    {
+                        match self.chat.export_to_file("AgTravelCraft", "AgTravelCraft") {
+                            Ok(path) => {
+                                self.banner_message = Some((
+                                    format!("Exported chat transcript: {}", path.display()),
+                                    false,
+                                ));
+                            }
+                            Err(e) => {
+                                self.banner_message =
+                                    Some((format!("Chat export failed: {e}"), true));
+                            }
+                        }
+                    }
+                    if ui
+                        .small_button("Copy MD")
+                        .on_hover_text("Copy chat transcript to clipboard")
+                        .clicked()
+                    {
+                        ctx.copy_text(self.chat.export_markdown("AgTravelCraft"));
+                        self.banner_message = Some((
+                            "Copied chat transcript Markdown to clipboard.".to_string(),
+                            false,
+                        ));
+                    }
+                    if ui
+                        .small_button("Prompt")
+                        .on_hover_text("Inspect active system prompt")
+                        .clicked()
+                    {
+                        self.chat.last_preprompt = self.build_live_preprompt();
+                        self.chat.show_prompt_modal = true;
+                    }
+                });
+                ui.separator();
+
+                let mut copy_msg: Option<String> = None;
+                let scroll_h = (ui.available_height() - 155.0).max(160.0);
                 egui::ScrollArea::vertical()
-                    .max_height(360.0)
+                    .max_height(scroll_h)
+                    .stick_to_bottom(true)
                     .show(ui, |ui| {
                         if self.chat.messages.is_empty() {
                             ui.label(
                                 RichText::new(
-                                    "Ask about passports, transit stamps, or Vienna Customs flags.",
+                                    "Ask about passports, transit stamps, Resonite/Overte stages, or Vienna Customs flags.",
                                 )
                                 .small()
                                 .color(pal.text_muted),
                             );
+                            ui.add_space(6.0);
+                            ui.label(RichText::new("Quick Prompts:").small().color(pal.accent));
+                            for starter in [
+                                "Explain the flagged prompt-injection turns in Vienna Customs.",
+                                "Summarize the transit stamps and hop budget for the selected voyage.",
+                                "List the Resonite and Overte Teahouse roles for this council.",
+                            ] {
+                                if ui.small_button(starter).clicked() {
+                                    self.chat.draft = starter.to_string();
+                                }
+                            }
                         }
                         for msg in &self.chat.messages {
                             let color = if msg.is_error {
@@ -756,48 +865,86 @@ impl AgTravelCraftView {
                             } else {
                                 pal.text_primary
                             };
-                            ui.label(
-                                RichText::new(format!("{}:", msg.role))
-                                    .strong()
-                                    .color(color),
-                            );
+                            ui.horizontal(|ui| {
+                                ui.label(
+                                    RichText::new(format!("{}:", msg.role))
+                                        .strong()
+                                        .color(color),
+                                );
+                                if msg.role == "assistant"
+                                    && !msg.is_error
+                                    && ui.small_button("Copy").clicked()
+                                {
+                                    copy_msg = Some(msg.content.clone());
+                                }
+                            });
                             ui.label(&msg.content);
                             ui.add_space(4.0);
                         }
+                        if self.chat.busy {
+                            ui.horizontal(|ui| {
+                                ui.spinner();
+                                ui.label(
+                                    RichText::new(format!(
+                                        "Querying {}...",
+                                        self.chat.settings.model
+                                    ))
+                                    .small()
+                                    .color(pal.text_muted),
+                                );
+                            });
+                        }
                     });
+                if let Some(txt) = copy_msg {
+                    ctx.copy_text(txt);
+                    self.banner_message = Some(("Copied assistant reply.".to_string(), false));
+                }
+
                 ui.separator();
-                ui.text_edit_multiline(&mut self.chat.draft);
+                let resp = ui.add(
+                    egui::TextEdit::multiline(&mut self.chat.draft)
+                        .desired_rows(3)
+                        .hint_text("Type a message (Ctrl+Enter to send)..."),
+                );
+                let ctrl_enter = resp.has_focus()
+                    && ctx.input(|i| i.modifiers.ctrl && i.key_pressed(egui::Key::Enter));
+
                 ui.horizontal(|ui| {
                     let send_enabled = !self.chat.busy && !self.chat.draft.trim().is_empty();
                     if ui
                         .add_enabled(send_enabled, egui::Button::new("Send"))
                         .clicked()
+                        || (ctrl_enter && send_enabled)
                     {
-                        let skills_text = list_skills()
-                            .into_iter()
-                            .map(|s| s.content)
-                            .collect::<Vec<_>>()
-                            .join("\n\n");
-                        let status_json = serde_json::to_string_pretty(&self.status)
-                            .unwrap_or_else(|_| "{}".to_string());
-                        let sel = self
-                            .selected_voyage_id
-                            .as_deref()
-                            .and_then(|id| self.voyages.iter().find(|v| v.voyage_id == id))
-                            .and_then(|v| serde_json::to_string_pretty(v).ok())
-                            .unwrap_or_default();
-                        let preprompt = self.chat.build_preprompt(
-                            "AgTravelCraft",
-                            &skills_text,
-                            &status_json,
-                            &sel,
-                        );
+                        let preprompt = self.build_live_preprompt();
                         self.chat.send(preprompt);
+                    }
+                    let can_retry =
+                        !self.chat.busy && self.chat.messages.iter().any(|m| m.role == "user");
+                    if ui
+                        .add_enabled(can_retry, egui::Button::new("Retry"))
+                        .clicked()
+                    {
+                        let preprompt = self.build_live_preprompt();
+                        self.chat.retry_last(preprompt);
                     }
                     if ui.button("Clear").clicked() {
                         self.chat.messages.clear();
                     }
                 });
+
+                if self.chat.show_prompt_modal {
+                    egui::Window::new("Active System Pre-Prompt")
+                        .open(&mut self.chat.show_prompt_modal)
+                        .default_size([620.0, 420.0])
+                        .show(ctx, |ui| {
+                            egui::ScrollArea::vertical().show(ui, |ui| {
+                                ui.label(
+                                    RichText::new(&self.chat.last_preprompt).monospace().small(),
+                                );
+                            });
+                        });
+                }
             }
             RightDockTab::Metadata => {
                 if let Some(id) = &self.selected_voyage_id
@@ -880,6 +1027,22 @@ mod tests {
         let vid = view.voyages[0].voyage_id.clone();
         view.redact_turn(&vid, 3);
         assert_eq!(view.customs[0].redacted_turns, vec![3]);
+        Ok(())
+    }
+
+    #[test]
+    fn chat_personality_and_markdown_export() -> Result<(), Box<dyn std::error::Error>> {
+        let store = TravelStore::open_in_memory()?;
+        let mut view = AgTravelCraftView::new(store);
+        view.chat.settings.personality = crate::llm::ChatPersonality::TokyoNekomimiArchitect;
+        view.chat.messages.push(crate::llm::ChatMessage {
+            role: "user".to_string(),
+            content: "Summarize Vienna Customs".to_string(),
+            is_error: false,
+        });
+        let md = view.chat.export_markdown("AgTravelCraft");
+        assert!(md.contains("Tokyo Nekomimi Gal"));
+        assert!(md.contains("Summarize Vienna Customs"));
         Ok(())
     }
 }
