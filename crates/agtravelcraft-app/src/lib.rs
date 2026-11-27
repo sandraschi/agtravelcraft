@@ -660,7 +660,7 @@ impl AgTravelCraftView {
             }
         });
         ui.add_space(4.0);
-        ui.label(RichText::new("Backdrop Pattern (6 DJCraft Patterns)").strong());
+        ui.label(RichText::new("Backdrop Pattern (7 Procedural Patterns)").strong());
         ui.horizontal_wrapped(|ui| {
             for bg in BackdropStyle::ALL {
                 if ui
