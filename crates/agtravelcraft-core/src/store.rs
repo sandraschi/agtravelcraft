@@ -3,6 +3,7 @@ use std::path::{Path, PathBuf};
 use chrono::Utc;
 use rusqlite::{Connection, OptionalExtension, params};
 
+use crate::capsule::{KnownPeer, PortableCapsule, validate_pubkey_hex, verify_signed_capsule};
 use crate::council::{DelegateProposal, run_bounded_council};
 use crate::proto::{
     ALLOWED_ACTION_ONLY, CouncilMinutes, CustomsRecord, DEFAULT_DEMO_KEY, DiplomaticPassport,
@@ -75,6 +76,13 @@ impl TravelStore {
                  decided_at_ms INTEGER,
                  created_at_ms INTEGER NOT NULL,
                  FOREIGN KEY(voyage_id) REFERENCES voyages(voyage_id) ON DELETE CASCADE
+             );
+
+             CREATE TABLE IF NOT EXISTS known_peers (
+                 origin TEXT PRIMARY KEY,
+                 public_key_hex TEXT NOT NULL,
+                 label TEXT NOT NULL,
+                 added_at_ms INTEGER NOT NULL
              );",
         )?;
         // Idempotent migration for v0.1 databases lacking redacted_turns_json
@@ -87,6 +95,119 @@ impl TravelStore {
 
     pub fn db_path(&self) -> &Path {
         &self.db_path
+    }
+
+    pub fn add_known_peer(
+        &self,
+        origin: &str,
+        public_key_hex: &str,
+        label: &str,
+        is_human: bool,
+    ) -> TravelResult<KnownPeer> {
+        if !is_human {
+            return Err(TravelError::AccessDenied(
+                "red line #6: modifying known_peers allowlist is human-only; MCP agents cannot self-allowlist peers".to_string(),
+            ));
+        }
+        let origin_t = origin.trim();
+        let pubkey_t = public_key_hex.trim().to_ascii_lowercase();
+        let label_t = label.trim();
+        if origin_t.is_empty() || label_t.is_empty() {
+            return Err(TravelError::InvalidInput(
+                "origin and label must not be empty".to_string(),
+            ));
+        }
+        let _ = validate_pubkey_hex(&pubkey_t)?;
+        let now_ms = Utc::now().timestamp_millis();
+        self.conn.execute(
+            "INSERT INTO known_peers (origin, public_key_hex, label, added_at_ms)
+             VALUES (?1, ?2, ?3, ?4)
+             ON CONFLICT(origin) DO UPDATE SET
+                 public_key_hex = excluded.public_key_hex,
+                 label = excluded.label,
+                 added_at_ms = excluded.added_at_ms",
+            params![origin_t, pubkey_t, label_t, now_ms],
+        )?;
+        Ok(KnownPeer {
+            origin: origin_t.to_string(),
+            public_key_hex: pubkey_t,
+            label: label_t.to_string(),
+            added_at_ms: now_ms,
+        })
+    }
+
+    pub fn list_known_peers(&self) -> TravelResult<Vec<KnownPeer>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT origin, public_key_hex, label, added_at_ms
+             FROM known_peers ORDER BY origin ASC",
+        )?;
+        let rows = stmt.query_map([], |row| {
+            Ok(KnownPeer {
+                origin: row.get(0)?,
+                public_key_hex: row.get(1)?,
+                label: row.get(2)?,
+                added_at_ms: row.get(3)?,
+            })
+        })?;
+        let mut out = Vec::new();
+        for item in rows {
+            out.push(item?);
+        }
+        Ok(out)
+    }
+
+    pub fn import_capsule(&self, capsule: &PortableCapsule) -> TravelResult<VoyageRecord> {
+        let peers = self.list_known_peers()?;
+        verify_signed_capsule(capsule, &peers)?;
+
+        let now_ms = Utc::now().timestamp_millis();
+        let passport = &capsule.voyage.passport;
+        let passport_json = serde_json::to_string(passport)?;
+        let minutes_json = match &capsule.voyage.minutes {
+            Some(m) => Some(serde_json::to_string(m)?),
+            None => None,
+        };
+        let hop_count = u8::try_from(passport.transit_stamps.len()).unwrap_or(u8::MAX);
+        let state = if capsule.voyage.minutes.is_some() {
+            "awaiting_vienna_customs"
+        } else {
+            "received_capsule"
+        };
+
+        self.conn.execute(
+            "INSERT INTO voyages (
+                 voyage_id, agent_id, home_origin, destination_council, purpose,
+                 state, hop_count, max_hops, passport_json, minutes_json,
+                 created_at_ms, updated_at_ms
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)
+             ON CONFLICT(voyage_id) DO UPDATE SET
+                 state = excluded.state,
+                 hop_count = excluded.hop_count,
+                 passport_json = excluded.passport_json,
+                 minutes_json = excluded.minutes_json,
+                 updated_at_ms = excluded.updated_at_ms",
+            params![
+                passport.voyage_id,
+                passport.agent_id,
+                passport.home_origin,
+                passport.destination_council,
+                passport.purpose,
+                state,
+                i64::from(hop_count),
+                i64::from(passport.max_hops),
+                passport_json,
+                minutes_json,
+                now_ms,
+                now_ms
+            ],
+        )?;
+
+        if let Some(m) = &capsule.voyage.minutes {
+            self.quarantine_at_customs(&passport.voyage_id, m)?;
+        }
+
+        self.get_voyage(&passport.voyage_id)?
+            .ok_or_else(|| TravelError::NotFound(passport.voyage_id.clone()))
     }
 
     pub fn record_voyage(

@@ -5,6 +5,7 @@ pub mod llm;
 pub mod skins;
 pub mod visuals;
 
+use agtravelcraft_core::capsule::{IdentityRecord, default_identity_path, export_signed_capsule};
 use agtravelcraft_core::proto::{CustomsRecord, TravelStatus, VoyageRecord};
 use agtravelcraft_core::skills::list_skills;
 use agtravelcraft_core::stage::StageTarget;
@@ -186,6 +187,61 @@ impl AgTravelCraftView {
         }
     }
 
+    pub fn export_selected_capsule(&mut self) {
+        let Some(voyage) = self
+            .selected_voyage_id
+            .as_deref()
+            .and_then(|id| self.voyages.iter().find(|v| v.voyage_id == id))
+            .or_else(|| self.voyages.first())
+            .cloned()
+        else {
+            self.banner_message = Some(("No voyage selected to export.".to_string(), true));
+            return;
+        };
+
+        let id_path = default_identity_path();
+        let identity = match IdentityRecord::load_or_create(&id_path, &voyage.home_origin) {
+            Ok(i) => i,
+            Err(e) => {
+                self.banner_message = Some((format!("Identity error: {e}"), true));
+                return;
+            }
+        };
+        let capsule = match export_signed_capsule(&voyage, &identity, &voyage.destination_council) {
+            Ok(c) => c,
+            Err(e) => {
+                self.banner_message = Some((format!("Capsule export failed: {e}"), true));
+                return;
+            }
+        };
+        let out_dir = self
+            .store
+            .db_path()
+            .parent()
+            .map(|p| p.join("capsules"))
+            .unwrap_or_else(|| std::path::PathBuf::from("capsules"));
+        if let Err(e) = std::fs::create_dir_all(&out_dir) {
+            self.banner_message = Some((format!("Failed to create capsules dir: {e}"), true));
+            return;
+        }
+        let short_id = &voyage.voyage_id[..8.min(voyage.voyage_id.len())];
+        let out_file = out_dir.join(format!("voyage_{short_id}.agtravel.json"));
+        match serde_json::to_string_pretty(&capsule)
+            .map_err(|e| e.to_string())
+            .and_then(|s| std::fs::write(&out_file, s).map_err(|e| e.to_string()))
+        {
+            Ok(()) => {
+                self.banner_message = Some((
+                    format!("Signed Ed25519 capsule exported: {}", out_file.display()),
+                    false,
+                ));
+            }
+            Err(e) => {
+                self.banner_message = Some((format!("Failed to write capsule: {e}"), true));
+            }
+        }
+    }
+
     pub fn render_panels(&mut self, ctx: &egui::Context, ui: &mut egui::Ui) {
         self.chat.poll();
         let pal = Palette::for_skin(self.skin);
@@ -308,6 +364,13 @@ impl AgTravelCraftView {
 
         if ui.button("Run Vienna -> Tokyo Demo").clicked() {
             self.run_demo_voyage();
+        }
+        if ui
+            .button("Export .agtravel.json Capsule")
+            .on_hover_text("Sign selected voyage with Ed25519 for Email / Matrix / file sync")
+            .clicked()
+        {
+            self.export_selected_capsule();
         }
         if ui.button("Refresh Store").clicked() {
             self.refresh();

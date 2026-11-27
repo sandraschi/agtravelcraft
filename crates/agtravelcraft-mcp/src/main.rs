@@ -74,6 +74,33 @@ enum SubCmd {
         #[arg(long)]
         voyage_id: String,
     },
+    /// Show this node's Ed25519 public key and origin ID.
+    Identity,
+    /// List allowlisted Ed25519 peer public keys.
+    Peers,
+    /// Human-only: add a peer Ed25519 public key to known_peers allowlist.
+    PeerAdd {
+        #[arg(long)]
+        origin: String,
+        #[arg(long)]
+        pubkey: String,
+        #[arg(long)]
+        label: String,
+    },
+    /// Sign and export a voyage as a portable .agtravel.json capsule.
+    CapsuleExport {
+        #[arg(long)]
+        voyage_id: String,
+        #[arg(long, default_value = "tokyo-guild")]
+        recipient: String,
+        #[arg(long)]
+        out: Option<String>,
+    },
+    /// Verify Ed25519 signature + peer allowlist and import a .agtravel.json capsule.
+    CapsuleImport {
+        #[arg(long)]
+        file: String,
+    },
     /// Create an atomic SQLite VACUUM INTO backup snapshot.
     Backup {
         #[arg(long)]
@@ -143,6 +170,36 @@ fn main() -> ExitCode {
         }
         SubCmd::Chronicle { voyage_id } => {
             run_and_print(Command::ExportChronicle { voyage_id }, &store)
+        }
+        SubCmd::Identity => run_and_print(Command::IdentityInfo, &store),
+        SubCmd::Peers => run_and_print(Command::ListPeers, &store),
+        SubCmd::PeerAdd {
+            origin,
+            pubkey,
+            label,
+        } => run_and_print(
+            Command::AddPeer {
+                origin,
+                public_key_hex: pubkey,
+                label,
+                is_human: true,
+            },
+            &store,
+        ),
+        SubCmd::CapsuleExport {
+            voyage_id,
+            recipient,
+            out,
+        } => run_and_print(
+            Command::ExportCapsule {
+                voyage_id,
+                recipient_origin: recipient,
+                destination: out,
+            },
+            &store,
+        ),
+        SubCmd::CapsuleImport { file } => {
+            run_and_print(Command::ImportCapsule { path: file }, &store)
         }
         SubCmd::Backup { dest } => {
             run_and_print(Command::BackupSnapshot { destination: dest }, &store)

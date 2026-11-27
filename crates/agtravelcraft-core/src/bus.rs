@@ -1,6 +1,9 @@
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
+use crate::capsule::{
+    IdentityRecord, PortableCapsule, default_identity_path, export_signed_capsule,
+};
 use crate::skills::{list_skills, read_skill};
 use crate::stage::{StageTarget, build_stage_script, export_storytold_chronicle};
 use crate::store::TravelStore;
@@ -35,6 +38,22 @@ pub enum Command {
     },
     ExportChronicle {
         voyage_id: String,
+    },
+    IdentityInfo,
+    ListPeers,
+    AddPeer {
+        origin: String,
+        public_key_hex: String,
+        label: String,
+        is_human: bool,
+    },
+    ExportCapsule {
+        voyage_id: String,
+        recipient_origin: String,
+        destination: Option<String>,
+    },
+    ImportCapsule {
+        path: String,
     },
     BackupSnapshot {
         destination: String,
@@ -88,6 +107,59 @@ impl Command {
                 let customs = store.get_customs(&voyage_id)?;
                 let md = export_storytold_chronicle(&voyage, customs.as_ref());
                 Ok(json!({ "voyage_id": voyage_id, "markdown": md }))
+            }
+            Command::IdentityInfo => {
+                let path = default_identity_path();
+                let id = IdentityRecord::load_or_create(&path, "vienna-goliath")?;
+                Ok(serde_json::to_value(id.public_info(&path))?)
+            }
+            Command::ListPeers => Ok(serde_json::to_value(store.list_known_peers()?)?),
+            Command::AddPeer {
+                origin,
+                public_key_hex,
+                label,
+                is_human,
+            } => Ok(serde_json::to_value(store.add_known_peer(
+                &origin,
+                &public_key_hex,
+                &label,
+                is_human,
+            )?)?),
+            Command::ExportCapsule {
+                voyage_id,
+                recipient_origin,
+                destination,
+            } => {
+                let voyage = store
+                    .get_voyage(&voyage_id)?
+                    .ok_or_else(|| TravelError::NotFound(format!("voyage '{voyage_id}'")))?;
+                let id_path = default_identity_path();
+                let id = IdentityRecord::load_or_create(&id_path, &voyage.home_origin)?;
+                let capsule = export_signed_capsule(&voyage, &id, &recipient_origin)?;
+                if let Some(dest) = destination {
+                    let p = std::path::PathBuf::from(&dest);
+                    if let Some(parent) = p.parent()
+                        && !parent.as_os_str().is_empty()
+                    {
+                        std::fs::create_dir_all(parent)?;
+                    }
+                    std::fs::write(&p, serde_json::to_string_pretty(&capsule)?)?;
+                    Ok(json!({
+                        "capsule_path": p.display().to_string(),
+                        "sender_origin": capsule.sender_origin,
+                        "sender_pubkey_hex": capsule.sender_pubkey_hex,
+                        "recipient_origin": capsule.recipient_origin,
+                        "voyage_id": capsule.voyage.voyage_id
+                    }))
+                } else {
+                    Ok(serde_json::to_value(capsule)?)
+                }
+            }
+            Command::ImportCapsule { path } => {
+                let raw = std::fs::read_to_string(&path)?;
+                let capsule: PortableCapsule = serde_json::from_str(&raw)?;
+                let imported = store.import_capsule(&capsule)?;
+                Ok(serde_json::to_value(imported)?)
             }
             Command::BackupSnapshot { destination } => {
                 let path = store.backup_snapshot(&destination)?;
@@ -432,6 +504,61 @@ mod tests {
         assert!(bak_path.exists());
 
         let _ = std::fs::remove_dir_all(&dir);
+        Ok(())
+    }
+
+    #[test]
+    fn ed25519_capsule_roundtrip_tamper_and_allowlist() -> Result<(), Box<dyn std::error::Error>> {
+        use crate::capsule::{IdentityRecord, export_signed_capsule};
+
+        // Vienna mints a voyage and signs an Ed25519 portable capsule
+        let vienna_store = TravelStore::open_in_memory()?;
+        let voyage = vienna_store.seed_demo()?;
+        let vienna_id = IdentityRecord::generate("vienna-goliath");
+        let capsule = export_signed_capsule(&voyage, &vienna_id, "tokyo-guild")?;
+
+        // Tokyo rejects before Vienna's pubkey is in known_peers (Red Line #6)
+        let tokyo_store = TravelStore::open_in_memory()?;
+        assert!(matches!(
+            tokyo_store.import_capsule(&capsule),
+            Err(TravelError::SecurityViolation(_))
+        ));
+
+        // Non-human cannot add peers to allowlist
+        assert!(matches!(
+            tokyo_store.add_known_peer(
+                "vienna-goliath",
+                &vienna_id.public_key_hex,
+                "Sandra Vienna",
+                false
+            ),
+            Err(TravelError::AccessDenied(_))
+        ));
+
+        // Human allowlists Vienna's Ed25519 public key
+        let _ = tokyo_store.add_known_peer(
+            "vienna-goliath",
+            &vienna_id.public_key_hex,
+            "Sandra Vienna",
+            true,
+        )?;
+
+        // 1-byte tamper in transit is rejected by Ed25519 verification
+        let mut tampered = capsule.clone();
+        tampered.voyage.purpose = "Tampered in email transit".to_string();
+        assert!(matches!(
+            tokyo_store.import_capsule(&tampered),
+            Err(TravelError::SecurityViolation(_))
+        ));
+
+        // Genuine capsule imports cleanly and quarantines minutes at Customs
+        let imported = tokyo_store.import_capsule(&capsule)?;
+        assert_eq!(imported.voyage_id, voyage.voyage_id);
+        let customs = tokyo_store
+            .get_customs(&imported.voyage_id)?
+            .ok_or("imported minutes must enter customs")?;
+        assert_eq!(customs.taint, "remote_peer");
+        assert_eq!(customs.decision, "quarantined");
         Ok(())
     }
 }

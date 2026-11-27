@@ -220,6 +220,42 @@ fn tool_catalog() -> Vec<Value> {
                 "required": ["voyage_id", "turn_index", "reviewer"]
             }
         }),
+        json!({
+            "name": "travel_identity",
+            "description": "Return this node's local Ed25519 public key and origin_id (secret key never leaves disk).",
+            "inputSchema": { "type": "object", "properties": {} }
+        }),
+        json!({
+            "name": "travel_list_peers",
+            "description": "List allowlisted Ed25519 peer public keys permitted to send .agtravel.json capsules.",
+            "inputSchema": { "type": "object", "properties": {} }
+        }),
+        json!({
+            "name": "travel_export_capsule",
+            "description": "Sign and export a voyage as a portable Ed25519-signed .agtravel.json capsule for async transport over Email, Matrix, or file drop.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "voyage_id": { "type": "string" },
+                    "recipient_origin": { "type": "string" },
+                    "destination": { "type": "string" }
+                },
+                "required": ["voyage_id", "recipient_origin"]
+            }
+        }),
+        json!({
+            "name": "travel_add_peer",
+            "description": "Human-only peer allowlist mutation (red line #6). Calls over MCP are intentionally blocked.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "origin": { "type": "string" },
+                    "public_key_hex": { "type": "string" },
+                    "label": { "type": "string" }
+                },
+                "required": ["origin", "public_key_hex", "label"]
+            }
+        }),
     ]
 }
 
@@ -327,6 +363,55 @@ fn call_tool(store: &TravelStore, name: &str, args: &Value) -> Value {
             }
             .dispatch(store)
         }
+        "travel_identity" => Command::IdentityInfo.dispatch(store),
+        "travel_list_peers" => Command::ListPeers.dispatch(store),
+        "travel_export_capsule" => {
+            let voyage_id = args
+                .get("voyage_id")
+                .and_then(Value::as_str)
+                .unwrap_or("")
+                .to_string();
+            let recipient_origin = args
+                .get("recipient_origin")
+                .and_then(Value::as_str)
+                .unwrap_or("tokyo-guild")
+                .to_string();
+            let destination = args
+                .get("destination")
+                .and_then(Value::as_str)
+                .map(ToString::to_string);
+            Command::ExportCapsule {
+                voyage_id,
+                recipient_origin,
+                destination,
+            }
+            .dispatch(store)
+        }
+        "travel_add_peer" => {
+            let origin = args
+                .get("origin")
+                .and_then(Value::as_str)
+                .unwrap_or("")
+                .to_string();
+            let public_key_hex = args
+                .get("public_key_hex")
+                .and_then(Value::as_str)
+                .unwrap_or("")
+                .to_string();
+            let label = args
+                .get("label")
+                .and_then(Value::as_str)
+                .unwrap_or("")
+                .to_string();
+            // Red line #6: MCP callers cannot mutate known_peers allowlist.
+            Command::AddPeer {
+                origin,
+                public_key_hex,
+                label,
+                is_human: false,
+            }
+            .dispatch(store)
+        }
         _ => {
             return json!({
                 "content": [{ "type": "text", "text": format!("unknown tool: {name}") }],
@@ -390,7 +475,7 @@ mod tests {
     }
 
     #[test]
-    fn mcp_tools_list_contains_all_ten_tools() -> Result<(), Box<dyn std::error::Error>> {
+    fn mcp_tools_list_contains_all_fourteen_tools() -> Result<(), Box<dyn std::error::Error>> {
         let store = TravelStore::open_in_memory()?;
         let resp = handle_request(
             &store,
@@ -400,7 +485,7 @@ mod tests {
         let tools = resp["result"]["tools"]
             .as_array()
             .ok_or("tools must be array")?;
-        assert_eq!(tools.len(), 10);
+        assert_eq!(tools.len(), 14);
         Ok(())
     }
 

@@ -1,6 +1,7 @@
 #![forbid(unsafe_code)]
 
 pub mod bus;
+pub mod capsule;
 pub mod council;
 pub mod proto;
 pub mod skills;
