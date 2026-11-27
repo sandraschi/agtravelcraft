@@ -120,6 +120,7 @@ pub struct AgTravelCraftView {
     pub store: TravelStore,
     pub skin: SkinId,
     pub backdrop: BackdropStyle,
+    pub last_dark_skin: SkinId,
     pub active_tab: ActiveTab,
     pub show_left_sidebar: bool,
     pub show_right_sidebar: bool,
@@ -146,6 +147,7 @@ impl AgTravelCraftView {
             store,
             skin: SkinId::BattleConsole,
             backdrop: SkinId::BattleConsole.recommended_backdrop(),
+            last_dark_skin: SkinId::BattleConsole,
             active_tab: ActiveTab::Voyages,
             show_left_sidebar: true,
             show_right_sidebar: true,
@@ -172,7 +174,26 @@ impl AgTravelCraftView {
     pub fn set_skin(&mut self, ctx: &egui::Context, skin: SkinId) {
         self.skin = skin;
         self.backdrop = skin.recommended_backdrop();
+        if !skin.is_light() {
+            self.last_dark_skin = skin;
+        }
         Palette::apply_visuals(ctx, skin);
+    }
+
+    pub fn toggle_light_dark(&mut self) {
+        if self.skin.is_light() {
+            self.skin = self.last_dark_skin;
+        } else {
+            self.last_dark_skin = self.skin;
+            self.skin = SkinId::DaylightStudio;
+        }
+    }
+
+    pub fn cycle_skin(&mut self) {
+        self.skin = self.skin.next();
+        if !self.skin.is_light() {
+            self.last_dark_skin = self.skin;
+        }
     }
 
     pub fn refresh(&mut self) {
@@ -377,11 +398,17 @@ impl AgTravelCraftView {
                         self.active_tab = ActiveTab::Settings;
                     }
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        ui.label(
-                            RichText::new(format!("Skin: {}", self.skin.label()))
-                                .small()
-                                .color(pal.text_muted),
-                        );
+                        let mode_btn = if self.skin.is_light() {
+                            "Dark"
+                        } else {
+                            "Light"
+                        };
+                        if ui.button(mode_btn).clicked() {
+                            self.toggle_light_dark();
+                        }
+                        if ui.button(format!("Skin: {}", self.skin.label())).clicked() {
+                            self.cycle_skin();
+                        }
                     });
                 });
             });
@@ -805,6 +832,9 @@ impl AgTravelCraftView {
                         .clicked()
                     {
                         self.set_skin(ctx, skin);
+                        if !skin.is_light() {
+                            self.last_dark_skin = skin;
+                        }
                     }
                 }
             });

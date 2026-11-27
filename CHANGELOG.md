@@ -2,6 +2,12 @@
 
 All notable changes to AgTravelCraft are documented in this file.
 
+## [Unreleased]
+
+### Fixed
+- Trade-dress parity: added Sun/Moon light-dark toggle, skin cycler, and last-dark-skin memory to match the other four Sovereign Craft apps.
+- Deepened `HELP.md` into a 10-section operator manual with full CLI reference, 14-tool MCP table, trade-dress guide, troubleshooting matrix, and FAQ.
+
 ## [0.1.0-alpha.1] - 2026-11-27
 
 ### Added
