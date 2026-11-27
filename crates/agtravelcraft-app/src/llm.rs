@@ -147,6 +147,7 @@ pub struct ChatMessage {
 
 pub struct ChatSession {
     pub settings: LlmSettings,
+    pub available_models: Vec<String>,
     pub messages: Vec<ChatMessage>,
     pub draft: String,
     pub show_prompt_modal: bool,
@@ -157,8 +158,11 @@ pub struct ChatSession {
 
 impl ChatSession {
     pub fn new(app_folder: &str) -> Self {
+        let settings = LlmSettings::load(app_folder);
+        let available_models = default_models_for_provider(settings.provider, &settings.model);
         Self {
-            settings: LlmSettings::load(app_folder),
+            settings,
+            available_models,
             messages: Vec::new(),
             draft: String::new(),
             show_prompt_modal: false,
@@ -166,6 +170,22 @@ impl ChatSession {
             pending_rx: None,
             busy: false,
         }
+    }
+
+    pub fn refresh_models(&mut self) -> Result<usize, String> {
+        let fetched = fetch_provider_models(&self.settings)?;
+        if fetched.is_empty() {
+            self.available_models =
+                default_models_for_provider(self.settings.provider, &self.settings.model);
+            return Err("Endpoint returned 0 models; kept preset list.".to_string());
+        }
+        self.available_models = fetched;
+        if !self.available_models.contains(&self.settings.model)
+            && let Some(first) = self.available_models.first()
+        {
+            self.settings.model = first.clone();
+        }
+        Ok(self.available_models.len())
     }
 
     pub fn build_preprompt(
@@ -302,6 +322,80 @@ impl ChatSession {
             }
         }
     }
+}
+
+pub fn default_models_for_provider(provider: LlmProvider, current: &str) -> Vec<String> {
+    let mut list: Vec<String> = match provider {
+        LlmProvider::Ollama => vec![
+            "qwen3.8:27b".to_string(),
+            "qwen2.5:14b".to_string(),
+            "qwen2.5-coder:14b".to_string(),
+            "llama3.3:70b".to_string(),
+            "mistral-nemo:12b".to_string(),
+            "deepseek-r1:14b".to_string(),
+            "gemma3:12b".to_string(),
+        ],
+        LlmProvider::OpenAiCompatible => vec![
+            "gpt-4.1-mini".to_string(),
+            "gpt-4.1".to_string(),
+            "claude-sonnet-4-5".to_string(),
+            "gemini-2.5-flash".to_string(),
+        ],
+    };
+    if !current.trim().is_empty() && !list.iter().any(|m| m == current.trim()) {
+        list.insert(0, current.trim().to_string());
+    }
+    list
+}
+
+fn fetch_provider_models(settings: &LlmSettings) -> Result<Vec<String>, String> {
+    let base = settings.endpoint.trim_end_matches('/');
+    let url = match settings.provider {
+        LlmProvider::Ollama => format!("{base}/api/tags"),
+        LlmProvider::OpenAiCompatible => format!("{base}/v1/models"),
+    };
+    let mut cmd = Command::new("curl.exe");
+    cmd.args(["-sS", "--max-time", "3", &url]);
+    if matches!(settings.provider, LlmProvider::OpenAiCompatible)
+        && !settings.api_key_env.trim().is_empty()
+        && let Ok(key) = std::env::var(settings.api_key_env.trim())
+        && !key.trim().is_empty()
+    {
+        cmd.args(["-H", &format!("Authorization: Bearer {}", key.trim())]);
+    }
+    let out = cmd
+        .output()
+        .map_err(|e| format!("failed to invoke curl.exe: {e}"))?;
+    if !out.status.success() {
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        return Err(format!("model refresh failed: {}", stderr.trim()));
+    }
+    let val: Value =
+        serde_json::from_slice(&out.stdout).map_err(|e| format!("invalid JSON from {url}: {e}"))?;
+    let mut models = Vec::new();
+    match settings.provider {
+        LlmProvider::Ollama => {
+            if let Some(arr) = val.get("models").and_then(Value::as_array) {
+                for item in arr {
+                    if let Some(name) = item.get("name").and_then(Value::as_str) {
+                        models.push(name.to_string());
+                    }
+                }
+            }
+        }
+        LlmProvider::OpenAiCompatible => {
+            if let Some(arr) = val.get("data").and_then(Value::as_array) {
+                for item in arr {
+                    if let Some(id) = item.get("id").and_then(Value::as_str) {
+                        models.push(id.to_string());
+                    }
+                }
+            }
+        }
+    }
+    models.sort();
+    models.dedup();
+    Ok(models)
 }
 
 fn invoke_llm(

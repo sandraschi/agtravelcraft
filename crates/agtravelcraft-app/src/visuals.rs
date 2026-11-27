@@ -75,10 +75,10 @@ pub fn render_passport_booklet(ui: &mut egui::Ui, voyage: &VoyageRecord, pal: Pa
             Pos2::new(left_x, y),
             Align2::LEFT_TOP,
             line,
-            FontId::monospace(11.5),
+            FontId::monospace(13.0),
             ink,
         );
-        y += 18.0;
+        y += 20.0;
     }
 
     // Vienna crimson wax seal on bottom-right of left page
@@ -265,7 +265,7 @@ pub fn render_route_map(ui: &mut egui::Ui, voyage: &VoyageRecord, pal: Palette) 
             Pos2::new(pos.x, pos.y + 13.0),
             Align2::CENTER_TOP,
             *label,
-            FontId::proportional(11.0),
+            FontId::proportional(13.0),
             pal.text_primary,
         );
     }

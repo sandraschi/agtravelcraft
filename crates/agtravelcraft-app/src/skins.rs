@@ -307,6 +307,27 @@ impl Palette {
         vis.override_text_color = Some(pal.text_primary);
         vis.selection.bg_fill = pal.accent.linear_multiply(0.35);
         ctx.set_visuals(vis);
+
+        // Enforce readable studio typography across both dark and light themes (no microscopic 10px labels)
+        for theme in [egui::Theme::Dark, egui::Theme::Light] {
+            ctx.style_mut_of(theme, |style| {
+                style
+                    .text_styles
+                    .insert(egui::TextStyle::Heading, egui::FontId::proportional(20.0));
+                style
+                    .text_styles
+                    .insert(egui::TextStyle::Body, egui::FontId::proportional(14.5));
+                style
+                    .text_styles
+                    .insert(egui::TextStyle::Button, egui::FontId::proportional(14.0));
+                style
+                    .text_styles
+                    .insert(egui::TextStyle::Monospace, egui::FontId::monospace(13.5));
+                style
+                    .text_styles
+                    .insert(egui::TextStyle::Small, egui::FontId::proportional(12.5));
+            });
+        }
     }
 }
 

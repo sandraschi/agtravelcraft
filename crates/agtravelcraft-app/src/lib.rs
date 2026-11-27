@@ -13,8 +13,91 @@ use agtravelcraft_core::store::TravelStore;
 use egui::{Color32, RichText};
 
 use crate::help::HelpTab;
-use crate::llm::{ChatPersonality, ChatSession, LlmProvider};
+use crate::llm::{ChatPersonality, ChatSession, LlmProvider, default_models_for_provider};
 use crate::skins::{BackdropStyle, Palette, SkinId};
+use serde::{Deserialize, Serialize};
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SecurityPolicyConfig {
+    pub profile_name: String,
+    pub max_hops: u8,
+    pub max_council_rounds: u8,
+    pub max_turn_chars: usize,
+    pub passport_ttl_secs: i64,
+    pub require_allowlist: bool,
+    pub strict_injection_scanner: bool,
+}
+
+impl Default for SecurityPolicyConfig {
+    fn default() -> Self {
+        Self::balanced()
+    }
+}
+
+impl SecurityPolicyConfig {
+    pub fn strict() -> Self {
+        Self {
+            profile_name: "Strict (Paranoid)".to_string(),
+            max_hops: 2,
+            max_council_rounds: 3,
+            max_turn_chars: 1200,
+            passport_ttl_secs: 900,
+            require_allowlist: true,
+            strict_injection_scanner: true,
+        }
+    }
+
+    pub fn balanced() -> Self {
+        Self {
+            profile_name: "Balanced Courier (Default)".to_string(),
+            max_hops: 4,
+            max_council_rounds: 6,
+            max_turn_chars: 2000,
+            passport_ttl_secs: 3600,
+            require_allowlist: true,
+            strict_injection_scanner: true,
+        }
+    }
+
+    pub fn relaxed_sandbox() -> Self {
+        Self {
+            profile_name: "Relaxed Sandbox".to_string(),
+            max_hops: 6,
+            max_council_rounds: 10,
+            max_turn_chars: 3500,
+            passport_ttl_secs: 14_400,
+            require_allowlist: false,
+            strict_injection_scanner: false,
+        }
+    }
+
+    fn config_path() -> std::path::PathBuf {
+        if let Ok(local) = std::env::var("LOCALAPPDATA") {
+            return std::path::PathBuf::from(local)
+                .join("AgTravelCraft")
+                .join("security_policy.json");
+        }
+        std::path::PathBuf::from("agtravelcraft_security_policy.json")
+    }
+
+    pub fn load() -> Self {
+        std::fs::read_to_string(Self::config_path())
+            .ok()
+            .and_then(|s| serde_json::from_str(&s).ok())
+            .unwrap_or_default()
+    }
+
+    pub fn save(&self) -> Result<(), String> {
+        let path = Self::config_path();
+        if let Some(parent) = path.parent()
+            && !parent.as_os_str().is_empty()
+        {
+            std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+        }
+        let body = serde_json::to_string_pretty(self).map_err(|e| e.to_string())?;
+        std::fs::write(path, body).map_err(|e| e.to_string())
+    }
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum ActiveTab {
@@ -50,6 +133,7 @@ pub struct AgTravelCraftView {
     pub reviewer_name: String,
     pub banner_message: Option<(String, bool)>,
     pub chat: ChatSession,
+    pub security_policy: SecurityPolicyConfig,
     pub help_open: bool,
     pub help_tab: HelpTab,
     pub stage_target: StageTarget,
@@ -75,6 +159,7 @@ impl AgTravelCraftView {
             reviewer_name: "Sandra".to_string(),
             banner_message: None,
             chat: ChatSession::new("AgTravelCraft"),
+            security_policy: SecurityPolicyConfig::load(),
             help_open: false,
             help_tab: HelpTab::GetStarted,
             stage_target: StageTarget::Resonite,
@@ -708,111 +793,220 @@ impl AgTravelCraftView {
     }
 
     fn render_settings_tab(&mut self, ctx: &egui::Context, ui: &mut egui::Ui, pal: Palette) {
-        ui.heading("Trade-Dress Skin & Local-First LLM Settings");
-        ui.separator();
+        egui::ScrollArea::vertical().show(ui, |ui| {
+            ui.heading("Trade-Dress Skin, Security Policy & AI Chat Settings");
+            ui.separator();
 
-        ui.label(RichText::new("Studio Skin (9 DJCraft Presets)").strong());
-        ui.horizontal_wrapped(|ui| {
-            for skin in SkinId::ALL {
-                if ui
-                    .selectable_label(self.skin == skin, skin.label())
-                    .clicked()
-                {
-                    self.set_skin(ctx, skin);
+            ui.label(RichText::new("Studio Skin (9 DJCraft Presets)").strong());
+            ui.horizontal_wrapped(|ui| {
+                for skin in SkinId::ALL {
+                    if ui
+                        .selectable_label(self.skin == skin, skin.label())
+                        .clicked()
+                    {
+                        self.set_skin(ctx, skin);
+                    }
                 }
-            }
-        });
-        ui.add_space(4.0);
-        ui.label(RichText::new("Backdrop Pattern (7 Procedural Patterns)").strong());
-        ui.horizontal_wrapped(|ui| {
-            for bg in BackdropStyle::ALL {
-                if ui
-                    .selectable_label(self.backdrop == bg, bg.label())
-                    .clicked()
-                {
-                    self.backdrop = bg;
+            });
+            ui.add_space(4.0);
+            ui.label(RichText::new("Backdrop Pattern (7 Procedural Patterns)").strong());
+            ui.horizontal_wrapped(|ui| {
+                for bg in BackdropStyle::ALL {
+                    if ui
+                        .selectable_label(self.backdrop == bg, bg.label())
+                        .clicked()
+                    {
+                        self.backdrop = bg;
+                    }
                 }
-            }
-        });
-        ui.separator();
+            });
+            ui.separator();
 
-        ui.label(RichText::new("AI Chat Personality").strong());
-        ui.horizontal_wrapped(|ui| {
-            for persona in ChatPersonality::ALL {
-                if ui
-                    .selectable_label(self.chat.settings.personality == persona, persona.label())
-                    .clicked()
-                {
-                    self.chat.settings.personality = persona;
+            // Security Policy Section (sharpen or relax rules)
+            ui.heading(RichText::new("Security Policy & Red-Line Guardrails").color(pal.accent));
+            ui.horizontal_wrapped(|ui| {
+                if ui.button("Strict (Paranoid)").clicked() {
+                    self.security_policy = SecurityPolicyConfig::strict();
+                }
+                if ui.button("Balanced Courier (Default)").clicked() {
+                    self.security_policy = SecurityPolicyConfig::balanced();
+                }
+                if ui.button("Relaxed Sandbox").clicked() {
+                    self.security_policy = SecurityPolicyConfig::relaxed_sandbox();
+                }
+                ui.label(
+                    RichText::new(format!("Active: {}", self.security_policy.profile_name))
+                        .color(pal.text_muted),
+                );
+            });
+            ui.add_space(4.0);
+            ui.horizontal(|ui| {
+                ui.label("Max Waystation Hops:");
+                ui.add(egui::Slider::new(&mut self.security_policy.max_hops, 1..=8));
+            });
+            ui.horizontal(|ui| {
+                ui.label("Max Council Rounds:");
+                ui.add(egui::Slider::new(
+                    &mut self.security_policy.max_council_rounds,
+                    1..=12,
+                ));
+            });
+            ui.horizontal(|ui| {
+                ui.label("Max Turn Length (chars):");
+                ui.add(egui::Slider::new(
+                    &mut self.security_policy.max_turn_chars,
+                    500..=4000,
+                ));
+            });
+            ui.horizontal(|ui| {
+                ui.label("Passport TTL (seconds):");
+                ui.add(egui::Slider::new(
+                    &mut self.security_policy.passport_ttl_secs,
+                    300..=86_400,
+                ));
+            });
+            ui.checkbox(
+                &mut self.security_policy.require_allowlist,
+                "Require known_peers Ed25519 Allowlist (Red Line #6)",
+            );
+            if !self.security_policy.require_allowlist {
+                ui.label(
+                    RichText::new(
+                        "WARNING: Relaxing peer allowlist is for local sandbox testing only.",
+                    )
+                    .color(pal.danger),
+                );
+            }
+            ui.checkbox(
+                &mut self.security_policy.strict_injection_scanner,
+                "Strict UV Prompt-Injection Scanner at Vienna Customs",
+            );
+            ui.label(
+                RichText::new(
+                    "Locked Immutable Red Lines: Zero Code Mobility [ON] | Export-Candidate Luggage Only [ON] | Human-Only Customs Approval [ON]",
+                )
+                .color(pal.ok),
+            );
+            if ui.button("Save Security Policy").clicked() {
+                match self.security_policy.save() {
+                    Ok(()) => {
+                        self.banner_message =
+                            Some(("Saved Security Policy settings.".to_string(), false));
+                    }
+                    Err(e) => {
+                        self.banner_message =
+                            Some((format!("Failed to save security policy: {e}"), true));
+                    }
                 }
             }
-        });
-        ui.label(
-            RichText::new(self.chat.settings.personality.prompt_directive())
-                .small()
-                .color(pal.text_muted),
-        );
-        ui.separator();
+            ui.separator();
 
-        ui.label(RichText::new("AI Chat Provider").strong());
-        ui.horizontal(|ui| {
-            for prov in [LlmProvider::Ollama, LlmProvider::OpenAiCompatible] {
-                if ui
-                    .selectable_label(self.chat.settings.provider == prov, prov.label())
-                    .clicked()
-                {
-                    self.chat.settings.provider = prov;
+            ui.label(RichText::new("AI Chat Personality").strong());
+            ui.horizontal_wrapped(|ui| {
+                for persona in ChatPersonality::ALL {
+                    if ui
+                        .selectable_label(
+                            self.chat.settings.personality == persona,
+                            persona.label(),
+                        )
+                        .clicked()
+                    {
+                        self.chat.settings.personality = persona;
+                    }
                 }
-            }
-        });
-        ui.horizontal(|ui| {
-            ui.label("Endpoint:");
-            ui.text_edit_singleline(&mut self.chat.settings.endpoint);
-        });
-        ui.horizontal(|ui| {
-            ui.label("Model:");
-            ui.text_edit_singleline(&mut self.chat.settings.model);
-        });
-        ui.horizontal(|ui| {
-            ui.label("Temperature:");
-            ui.add(egui::Slider::new(
-                &mut self.chat.settings.temperature,
-                0.0..=1.5,
-            ));
-        });
-        ui.horizontal(|ui| {
-            ui.label("Context Window (num_ctx):");
-            ui.add(egui::DragValue::new(&mut self.chat.settings.num_ctx).range(2048..=131_072));
-        });
-        ui.horizontal(|ui| {
-            ui.label("API Key Env Var:");
-            ui.text_edit_singleline(&mut self.chat.settings.api_key_env);
-        });
-        ui.label("Extra System Instructions:");
-        ui.text_edit_multiline(&mut self.chat.settings.extra_instructions);
+            });
+            ui.label(
+                RichText::new(self.chat.settings.personality.prompt_directive())
+                    .color(pal.text_muted),
+            );
+            ui.separator();
 
-        if ui.button("Save LLM Settings").clicked() {
-            match self.chat.settings.save("AgTravelCraft") {
-                Ok(()) => {
-                    self.banner_message = Some(("Saved LLM settings.".to_string(), false));
+            ui.label(RichText::new("AI Chat Provider & Model").strong());
+            ui.horizontal(|ui| {
+                for prov in [LlmProvider::Ollama, LlmProvider::OpenAiCompatible] {
+                    if ui
+                        .selectable_label(self.chat.settings.provider == prov, prov.label())
+                        .clicked()
+                    {
+                        self.chat.settings.provider = prov;
+                        self.chat.available_models =
+                            default_models_for_provider(prov, &self.chat.settings.model);
+                    }
                 }
-                Err(e) => {
-                    self.banner_message = Some((format!("Failed to save settings: {e}"), true));
+            });
+            ui.horizontal(|ui| {
+                ui.label("Endpoint:");
+                ui.text_edit_singleline(&mut self.chat.settings.endpoint);
+            });
+            ui.horizontal(|ui| {
+                ui.label("Model Selector:");
+                egui::ComboBox::from_id_salt("settings_model_selector")
+                    .selected_text(&self.chat.settings.model)
+                    .width(240.0)
+                    .show_ui(ui, |ui| {
+                        for m in &self.chat.available_models {
+                            ui.selectable_value(&mut self.chat.settings.model, m.clone(), m);
+                        }
+                    });
+                if ui.button("Refresh Models").clicked() {
+                    match self.chat.refresh_models() {
+                        Ok(n) => {
+                            self.banner_message = Some((
+                                format!("Loaded {n} models from {}", self.chat.settings.endpoint),
+                                false,
+                            ));
+                        }
+                        Err(e) => {
+                            self.banner_message = Some((e, true));
+                        }
+                    }
+                }
+            });
+            ui.horizontal(|ui| {
+                ui.label("Custom Model Override:");
+                ui.text_edit_singleline(&mut self.chat.settings.model);
+            });
+            ui.horizontal(|ui| {
+                ui.label("Temperature:");
+                ui.add(egui::Slider::new(
+                    &mut self.chat.settings.temperature,
+                    0.0..=1.5,
+                ));
+            });
+            ui.horizontal(|ui| {
+                ui.label("Context Window (num_ctx):");
+                ui.add(egui::DragValue::new(&mut self.chat.settings.num_ctx).range(2048..=131_072));
+            });
+            ui.horizontal(|ui| {
+                ui.label("API Key Env Var:");
+                ui.text_edit_singleline(&mut self.chat.settings.api_key_env);
+            });
+            ui.label("Extra System Instructions:");
+            ui.text_edit_multiline(&mut self.chat.settings.extra_instructions);
+
+            if ui.button("Save LLM Settings").clicked() {
+                match self.chat.settings.save("AgTravelCraft") {
+                    Ok(()) => {
+                        self.banner_message = Some(("Saved LLM settings.".to_string(), false));
+                    }
+                    Err(e) => {
+                        self.banner_message = Some((format!("Failed to save settings: {e}"), true));
+                    }
                 }
             }
-        }
-        ui.add_space(6.0);
-        let badge = if self
-            .chat
-            .settings
-            .provider
-            .is_local(&self.chat.settings.endpoint)
-        {
-            RichText::new("LOCAL ENDPOINT").color(pal.local_badge)
-        } else {
-            RichText::new("CLOUD ENDPOINT").color(pal.cloud_badge)
-        };
-        ui.label(badge);
+            ui.add_space(6.0);
+            let badge = if self
+                .chat
+                .settings
+                .provider
+                .is_local(&self.chat.settings.endpoint)
+            {
+                RichText::new("LOCAL ENDPOINT").color(pal.local_badge)
+            } else {
+                RichText::new("CLOUD ENDPOINT").color(pal.cloud_badge)
+            };
+            ui.label(badge);
+        });
     }
 
     fn build_live_preprompt(&self) -> String {
@@ -1122,5 +1316,20 @@ mod tests {
         assert!(md.contains("Tokyo Nekomimi Gal"));
         assert!(md.contains("Summarize Vienna Customs"));
         Ok(())
+    }
+
+    #[test]
+    fn security_policy_presets_and_model_list() {
+        let strict = crate::SecurityPolicyConfig::strict();
+        let balanced = crate::SecurityPolicyConfig::balanced();
+        let relaxed = crate::SecurityPolicyConfig::relaxed_sandbox();
+        assert!(strict.max_hops < balanced.max_hops);
+        assert!(balanced.max_hops < relaxed.max_hops);
+        assert!(strict.require_allowlist);
+        assert!(!relaxed.require_allowlist);
+
+        let models =
+            crate::llm::default_models_for_provider(crate::llm::LlmProvider::Ollama, "qwen3.8:27b");
+        assert!(models.iter().any(|m| m == "qwen3.8:27b"));
     }
 }
