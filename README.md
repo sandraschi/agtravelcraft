@@ -1,8 +1,12 @@
 # AgTravelCraft
 
-**Pure-Rust Diplomatic Courier prototype: Passport Office, Waystation Relay, Bounded Anti-Moltbook Council Room, and Hostile-on-Return Vienna Customs.**
+**Pure-Rust Diplomatic Courier prototype: Passport Office, Waystation Relay, Bounded Anti-Moltbook Council Room, Resonite/Overte Teahouse Stage, and Hostile-on-Return Vienna Customs.**
 
 Built strictly under the 6 security red lines from `mcp-central-docs/research/2026-11-27-agtravel-waystation-meeting-threat-model.md`.
+
+![Goliath Fleet Chronicles: 5 Craft Apps in One Day](docs/assets/goliath-fleet-chronicles-comic.jpg)
+
+*Goliath Fleet Chronicles: Sandra and the Sovereign Agent Control Plane Quintet (`AuditCraft`, `SanctuaryCraft`, `SpringboardCraft`, `SleepCraft`, and `AgTravelCraft`).*
 
 ---
 
@@ -22,9 +26,10 @@ Built strictly under the 6 security red lines from `mcp-central-docs/research/20
 | Diplomatic Passport minting, luggage tier enforcement & keyed `BLAKE3` signing | `Implemented` | Rejects `private_sanctuary` & write tools |
 | Waystation Relay (`process_layover`) with allowlist, TTL, hop cap & Transit Stamps | `Implemented` | `agtravelcraft-core::waystation` |
 | Bounded Council Room (`run_bounded_council`) with `BLAKE3` loop terminator | `Implemented` | `agtravelcraft-core::council` |
-| Vienna Customs Quarantine, injection scanner & human-only approval gate | `Implemented` | Blocked over MCP (`travel_decide_customs`) |
-| Atomic SQLite `VACUUM INTO` `backup_snapshot` + bundled `SKILL.md` MCP resources | `Implemented` | `skill://agtravelcraft-workflow/SKILL.md` |
-| Native `egui 0.37` Voyages & Customs Studio (9 skins, Bookend menu, AI Chat Dock) | `Implemented` | Hideable left/right sidebars, `--smoke` |
+| Vienna Customs Quarantine, injection scanner, selective redaction & human-only gate | `Implemented` | Blocked over MCP (`travel_decide_customs`, `travel_redact_customs_turn`) |
+| Resonite (`resonite-mcp`) & Overte (`overte-mcp`) Diplomatic Teahouse 3D Stage | `Implemented` | Read-only stage plans, sanitized ComfyUI postcard prompts, Storytold chronicle |
+| Atomic SQLite `VACUUM INTO` `backup_snapshot` + bundled `SKILL.md` MCP resources | `Implemented` | `skill://agtravelcraft/workflow` |
+| Native `egui 0.37` Workstation (Passport Booklet, Route Map, 9 skins, Chat++) | `Implemented` | Resizable sidebars, 4 AI personalities, Markdown chat export, `--smoke` |
 | Live Tailscale/HTTPS multi-host transport for remote dev waystations | `Planned` | v0.2.0 |
 
 ---
