@@ -3,9 +3,11 @@
 pub mod help;
 pub mod llm;
 pub mod skins;
+pub mod visuals;
 
 use agtravelcraft_core::proto::{CustomsRecord, TravelStatus, VoyageRecord};
 use agtravelcraft_core::skills::list_skills;
+use agtravelcraft_core::stage::StageTarget;
 use agtravelcraft_core::store::TravelStore;
 use egui::{Color32, RichText};
 
@@ -17,6 +19,8 @@ use crate::skins::{Palette, SkinId};
 pub enum ActiveTab {
     #[default]
     Voyages,
+    PassportMap,
+    TeahouseStage,
     Customs,
     Settings,
 }
@@ -46,6 +50,8 @@ pub struct AgTravelCraftView {
     pub chat: ChatSession,
     pub help_open: bool,
     pub help_tab: HelpTab,
+    pub stage_target: StageTarget,
+    pub stage_turn_idx: usize,
 }
 
 impl AgTravelCraftView {
@@ -68,6 +74,8 @@ impl AgTravelCraftView {
             chat: ChatSession::new("AgTravelCraft"),
             help_open: false,
             help_tab: HelpTab::GetStarted,
+            stage_target: StageTarget::Resonite,
+            stage_turn_idx: 0,
         };
         view.refresh();
         view
@@ -129,6 +137,28 @@ impl AgTravelCraftView {
         }
     }
 
+    pub fn redact_turn(&mut self, voyage_id: &str, turn_index: usize) {
+        let reviewer = self.reviewer_name.clone();
+        match self
+            .store
+            .redact_customs_turn(voyage_id, turn_index, &reviewer, true)
+        {
+            Ok(_) => {
+                self.banner_message = Some((
+                    format!(
+                        "Vienna Customs redacted turn #{turn_index} on {} by {reviewer}",
+                        &voyage_id[..8.min(voyage_id.len())]
+                    ),
+                    false,
+                ));
+                self.refresh();
+            }
+            Err(e) => {
+                self.banner_message = Some((format!("Turn redaction failed: {e}"), true));
+            }
+        }
+    }
+
     pub fn trigger_backup(&mut self) {
         let ts = chrono::Utc::now().format("%Y%m%d_%H%M%S");
         let dest = self
@@ -156,13 +186,28 @@ impl AgTravelCraftView {
             egui::Panel::top("tab_bar").show(ui, |ui| {
                 ui.horizontal(|ui| {
                     if ui
-                        .selectable_label(
-                            self.active_tab == ActiveTab::Voyages,
-                            "Voyages & Transit Stamps",
-                        )
+                        .selectable_label(self.active_tab == ActiveTab::Voyages, "Voyages & Stamps")
                         .clicked()
                     {
                         self.active_tab = ActiveTab::Voyages;
+                    }
+                    if ui
+                        .selectable_label(
+                            self.active_tab == ActiveTab::PassportMap,
+                            "Passport & Map",
+                        )
+                        .clicked()
+                    {
+                        self.active_tab = ActiveTab::PassportMap;
+                    }
+                    if ui
+                        .selectable_label(
+                            self.active_tab == ActiveTab::TeahouseStage,
+                            "Resonite / Overte Stage",
+                        )
+                        .clicked()
+                    {
+                        self.active_tab = ActiveTab::TeahouseStage;
                     }
                     let pending = self.status.as_ref().map_or(0, |s| s.customs_pending);
                     let customs_label = if pending > 0 {
@@ -229,6 +274,8 @@ impl AgTravelCraftView {
 
             match self.active_tab {
                 ActiveTab::Voyages => self.render_voyages_tab(ui, pal),
+                ActiveTab::PassportMap => self.render_passport_map_tab(ui, pal),
+                ActiveTab::TeahouseStage => self.render_stage_tab(ui, pal),
                 ActiveTab::Customs => self.render_customs_tab(ui, pal),
                 ActiveTab::Settings => self.render_settings_tab(ctx, ui, pal),
             }
@@ -394,13 +441,66 @@ impl AgTravelCraftView {
         });
     }
 
+    fn render_passport_map_tab(&mut self, ui: &mut egui::Ui, pal: Palette) {
+        let selected = self
+            .selected_voyage_id
+            .as_deref()
+            .and_then(|id| self.voyages.iter().find(|v| v.voyage_id == id))
+            .or_else(|| self.voyages.first());
+
+        let Some(voyage) = selected.cloned() else {
+            ui.label("No voyage selected. Click 'Run Vienna -> Tokyo Demo' in the left sidebar.");
+            return;
+        };
+
+        egui::ScrollArea::vertical().show(ui, |ui| {
+            visuals::render_passport_booklet(ui, &voyage, pal);
+            ui.add_space(10.0);
+            visuals::render_route_map(ui, &voyage, pal);
+        });
+    }
+
+    fn render_stage_tab(&mut self, ui: &mut egui::Ui, pal: Palette) {
+        let selected = self
+            .selected_voyage_id
+            .as_deref()
+            .and_then(|id| self.voyages.iter().find(|v| v.voyage_id == id))
+            .or_else(|| self.voyages.first());
+
+        let Some(voyage) = selected.cloned() else {
+            ui.label("No voyage selected. Click 'Run Vienna -> Tokyo Demo' in the left sidebar.");
+            return;
+        };
+        let customs = self
+            .customs
+            .iter()
+            .find(|c| c.voyage_id == voyage.voyage_id)
+            .cloned();
+
+        let msg = egui::ScrollArea::vertical()
+            .show(ui, |ui| {
+                visuals::render_teahouse_stage(
+                    ui,
+                    &voyage,
+                    customs.as_ref(),
+                    &mut self.stage_target,
+                    &mut self.stage_turn_idx,
+                    pal,
+                )
+            })
+            .inner;
+        if let Some(m) = msg {
+            self.banner_message = Some((m, false));
+        }
+    }
+
     fn render_customs_tab(&mut self, ui: &mut egui::Ui, pal: Palette) {
         ui.heading("Vienna Customs Debrief (Hostile-on-Return Quarantine)");
         ui.horizontal(|ui| {
             ui.label("Human Reviewer:");
             ui.text_edit_singleline(&mut self.reviewer_name);
             ui.label(
-                RichText::new("(MCP agents cannot approve or reject Customs)")
+                RichText::new("(MCP agents cannot approve, reject, or redact Customs)")
                     .small()
                     .color(pal.warn),
             );
@@ -413,6 +513,9 @@ impl AgTravelCraftView {
         }
 
         let mut pending_action: Option<(String, bool)> = None;
+        let mut pending_redact: Option<(String, usize)> = None;
+        let uv_magenta = Color32::from_rgb(232, 64, 210);
+
         egui::ScrollArea::vertical().show(ui, |ui| {
             for c in &self.customs {
                 egui::Frame::group(ui.style()).show(ui, |ui| {
@@ -430,16 +533,66 @@ impl AgTravelCraftView {
                     if !c.injection_flags.is_empty() {
                         ui.label(
                             RichText::new(format!(
-                                "PROMPT INJECTION FLAGS ({}):",
+                                "UV PROMPT-INJECTION SCANNER ({} FLAGS):",
                                 c.injection_flags.len()
                             ))
                             .strong()
-                            .color(pal.danger),
+                            .color(uv_magenta),
                         );
                         for flag in &c.injection_flags {
-                            ui.label(RichText::new(format!("  ! {flag}")).color(pal.danger));
+                            ui.label(RichText::new(format!("  ! {flag}")).color(uv_magenta));
                         }
                     }
+
+                    // Per-turn inspection + selective human redaction
+                    if let Some(voyage) = self.voyages.iter().find(|v| v.voyage_id == c.voyage_id)
+                        && let Some(minutes) = &voyage.minutes
+                    {
+                        ui.collapsing(
+                            format!(
+                                "Inspect & Selectively Redact Turns ({} total, {} redacted)",
+                                minutes.turns.len(),
+                                c.redacted_turns.len()
+                            ),
+                            |ui| {
+                                for (idx, t) in minutes.turns.iter().enumerate() {
+                                    let is_redacted = c.redacted_turns.contains(&idx);
+                                    let marker =
+                                        format!("round {} [{}@{}]:", t.round, t.speaker, t.origin);
+                                    let is_flagged =
+                                        c.injection_flags.iter().any(|f| f.starts_with(&marker));
+                                    ui.horizontal(|ui| {
+                                        if is_redacted {
+                                            ui.label(
+                                                RichText::new(format!(
+                                                    "#{idx} R{} [{}]: [REDACTED AT VIENNA CUSTOMS]",
+                                                    t.round, t.speaker
+                                                ))
+                                                .color(pal.text_muted),
+                                            );
+                                        } else {
+                                            let col = if is_flagged {
+                                                uv_magenta
+                                            } else {
+                                                pal.text_primary
+                                            };
+                                            ui.label(
+                                                RichText::new(format!(
+                                                    "#{idx} R{} [{}]: {}",
+                                                    t.round, t.speaker, t.body
+                                                ))
+                                                .color(col),
+                                            );
+                                            if ui.small_button("[ REDACT TURN ]").clicked() {
+                                                pending_redact = Some((c.voyage_id.clone(), idx));
+                                            }
+                                        }
+                                    });
+                                }
+                            },
+                        );
+                    }
+
                     if let Some(rev) = &c.reviewer {
                         ui.label(
                             RichText::new(format!("Reviewed by: {rev}"))
@@ -448,11 +601,26 @@ impl AgTravelCraftView {
                         );
                     }
                     if c.decision == "quarantined" {
+                        ui.add_space(4.0);
                         ui.horizontal(|ui| {
-                            if ui.button("Approve into Vienna").clicked() {
+                            if ui
+                                .button(
+                                    RichText::new("[ ADMITTED TO VIENNA ]")
+                                        .strong()
+                                        .color(pal.ok),
+                                )
+                                .clicked()
+                            {
                                 pending_action = Some((c.voyage_id.clone(), true));
                             }
-                            if ui.button("Reject & Quarantine").clicked() {
+                            if ui
+                                .button(
+                                    RichText::new("[ QUARANTINED / REJECTED ]")
+                                        .strong()
+                                        .color(pal.danger),
+                                )
+                                .clicked()
+                            {
                                 pending_action = Some((c.voyage_id.clone(), false));
                             }
                         });
@@ -462,6 +630,9 @@ impl AgTravelCraftView {
             }
         });
 
+        if let Some((vid, idx)) = pending_redact {
+            self.redact_turn(&vid, idx);
+        }
         if let Some((vid, approve)) = pending_action {
             self.decide_selected_customs(&vid, approve);
         }
@@ -698,6 +869,17 @@ mod tests {
         assert!(view.show_left_sidebar);
         assert!(view.show_right_sidebar);
         assert!(view.show_tab_bar);
+        Ok(())
+    }
+
+    #[test]
+    fn view_selective_turn_redaction_works() -> Result<(), Box<dyn std::error::Error>> {
+        let store = TravelStore::open_in_memory()?;
+        let mut view = AgTravelCraftView::new(store);
+        view.run_demo_voyage();
+        let vid = view.voyages[0].voyage_id.clone();
+        view.redact_turn(&vid, 3);
+        assert_eq!(view.customs[0].redacted_turns, vec![3]);
         Ok(())
     }
 }

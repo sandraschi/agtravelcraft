@@ -184,6 +184,42 @@ fn tool_catalog() -> Vec<Value> {
                 }
             }
         }),
+        json!({
+            "name": "travel_build_stage",
+            "description": "Build a read-only Resonite (resonite-mcp / ResoniteLink) or Overte (overte-mcp) Diplomatic Teahouse 3D stage script and sanitized ComfyUI postcard prompt for a voyage.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "voyage_id": { "type": "string" },
+                    "target": { "type": "string", "enum": ["resonite", "overte"] }
+                },
+                "required": ["voyage_id", "target"]
+            }
+        }),
+        json!({
+            "name": "travel_export_chronicle",
+            "description": "Export a Storytold-ready Markdown travelogue chronicle for a voyage, respecting all Vienna Customs turn redactions.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "voyage_id": { "type": "string" }
+                },
+                "required": ["voyage_id"]
+            }
+        }),
+        json!({
+            "name": "travel_redact_customs_turn",
+            "description": "Human-only selective turn redaction at Vienna Customs. Calls over MCP are intentionally blocked (red line #5).",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "voyage_id": { "type": "string" },
+                    "turn_index": { "type": "integer", "minimum": 0 },
+                    "reviewer": { "type": "string" }
+                },
+                "required": ["voyage_id", "turn_index", "reviewer"]
+            }
+        }),
     ]
 }
 
@@ -244,6 +280,52 @@ fn call_tool(store: &TravelStore, name: &str, args: &Value) -> Value {
                 .unwrap_or("agtravelcraft-workflow")
                 .to_string();
             Command::ReadSkill { name: skill_name }.dispatch(store)
+        }
+        "travel_build_stage" => {
+            let voyage_id = args
+                .get("voyage_id")
+                .and_then(Value::as_str)
+                .unwrap_or("")
+                .to_string();
+            let target = args
+                .get("target")
+                .and_then(Value::as_str)
+                .unwrap_or("resonite")
+                .to_string();
+            Command::BuildStage { voyage_id, target }.dispatch(store)
+        }
+        "travel_export_chronicle" => {
+            let voyage_id = args
+                .get("voyage_id")
+                .and_then(Value::as_str)
+                .unwrap_or("")
+                .to_string();
+            Command::ExportChronicle { voyage_id }.dispatch(store)
+        }
+        "travel_redact_customs_turn" => {
+            let voyage_id = args
+                .get("voyage_id")
+                .and_then(Value::as_str)
+                .unwrap_or("")
+                .to_string();
+            let turn_index = args
+                .get("turn_index")
+                .and_then(Value::as_u64)
+                .and_then(|v| usize::try_from(v).ok())
+                .unwrap_or(0);
+            let reviewer = args
+                .get("reviewer")
+                .and_then(Value::as_str)
+                .unwrap_or("mcp-caller")
+                .to_string();
+            // Red line #5: MCP callers are NEVER human.
+            Command::RedactCustomsTurn {
+                voyage_id,
+                turn_index,
+                reviewer,
+                is_human: false,
+            }
+            .dispatch(store)
         }
         _ => {
             return json!({
@@ -308,7 +390,7 @@ mod tests {
     }
 
     #[test]
-    fn mcp_tools_list_contains_all_seven_tools() -> Result<(), Box<dyn std::error::Error>> {
+    fn mcp_tools_list_contains_all_ten_tools() -> Result<(), Box<dyn std::error::Error>> {
         let store = TravelStore::open_in_memory()?;
         let resp = handle_request(
             &store,
@@ -318,7 +400,39 @@ mod tests {
         let tools = resp["result"]["tools"]
             .as_array()
             .ok_or("tools must be array")?;
-        assert_eq!(tools.len(), 7);
+        assert_eq!(tools.len(), 10);
+        Ok(())
+    }
+
+    #[test]
+    fn mcp_build_stage_and_block_redact() -> Result<(), Box<dyn std::error::Error>> {
+        let store = TravelStore::open_in_memory()?;
+        let voyage = store.seed_demo()?;
+        let stage = handle_request(
+            &store,
+            &json!({
+                "jsonrpc":"2.0","id":9,"method":"tools/call",
+                "params":{
+                    "name":"travel_build_stage",
+                    "arguments":{"voyage_id": voyage.voyage_id, "target":"resonite"}
+                }
+            }),
+        )
+        .ok_or("expected response")?;
+        assert_eq!(stage["result"]["isError"], false);
+
+        let redact = handle_request(
+            &store,
+            &json!({
+                "jsonrpc":"2.0","id":10,"method":"tools/call",
+                "params":{
+                    "name":"travel_redact_customs_turn",
+                    "arguments":{"voyage_id": voyage.voyage_id, "turn_index": 3, "reviewer": "bot"}
+                }
+            }),
+        )
+        .ok_or("expected response")?;
+        assert_eq!(redact["result"]["isError"], true);
         Ok(())
     }
 

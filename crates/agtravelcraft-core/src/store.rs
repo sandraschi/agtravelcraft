@@ -69,6 +69,7 @@ impl TravelStore {
                  taint TEXT NOT NULL,
                  decision TEXT NOT NULL,
                  injection_flags_json TEXT NOT NULL,
+                 redacted_turns_json TEXT NOT NULL DEFAULT '[]',
                  summary TEXT NOT NULL,
                  reviewer TEXT,
                  decided_at_ms INTEGER,
@@ -76,6 +77,11 @@ impl TravelStore {
                  FOREIGN KEY(voyage_id) REFERENCES voyages(voyage_id) ON DELETE CASCADE
              );",
         )?;
+        // Idempotent migration for v0.1 databases lacking redacted_turns_json
+        let _ = self.conn.execute(
+            "ALTER TABLE customs_inbox ADD COLUMN redacted_turns_json TEXT NOT NULL DEFAULT '[]'",
+            [],
+        );
         Ok(())
     }
 
@@ -214,6 +220,39 @@ impl TravelStore {
             .ok_or_else(|| TravelError::NotFound(voyage_id.to_string()))
     }
 
+    pub fn redact_customs_turn(
+        &self,
+        voyage_id: &str,
+        turn_index: usize,
+        reviewer: &str,
+        is_human: bool,
+    ) -> TravelResult<CustomsRecord> {
+        if !is_human {
+            return Err(TravelError::AccessDenied(
+                "red line #5: Vienna Customs turn redaction is human-only; MCP agents cannot alter quarantined records".to_string(),
+            ));
+        }
+        if reviewer.trim().is_empty() {
+            return Err(TravelError::InvalidInput(
+                "reviewer name is required for turn redaction".to_string(),
+            ));
+        }
+        let mut existing = self
+            .get_customs(voyage_id)?
+            .ok_or_else(|| TravelError::NotFound(format!("customs item {voyage_id}")))?;
+        if !existing.redacted_turns.contains(&turn_index) {
+            existing.redacted_turns.push(turn_index);
+            existing.redacted_turns.sort_unstable();
+        }
+        let redacted_json = serde_json::to_string(&existing.redacted_turns)?;
+        self.conn.execute(
+            "UPDATE customs_inbox SET redacted_turns_json = ?1 WHERE voyage_id = ?2",
+            params![redacted_json, existing.voyage_id],
+        )?;
+        self.get_customs(voyage_id)?
+            .ok_or_else(|| TravelError::NotFound(voyage_id.to_string()))
+    }
+
     pub fn get_voyage(&self, voyage_id: &str) -> TravelResult<Option<VoyageRecord>> {
         let mut stmt = self.conn.prepare(
             "SELECT voyage_id, agent_id, home_origin, destination_council, purpose,
@@ -246,7 +285,7 @@ impl TravelStore {
     pub fn get_customs(&self, voyage_id: &str) -> TravelResult<Option<CustomsRecord>> {
         let mut stmt = self.conn.prepare(
             "SELECT voyage_id, council_id, taint, decision, injection_flags_json,
-                    summary, reviewer, decided_at_ms, created_at_ms
+                    redacted_turns_json, summary, reviewer, decided_at_ms, created_at_ms
              FROM customs_inbox WHERE voyage_id = ?1",
         )?;
         let row = stmt
@@ -259,7 +298,7 @@ impl TravelStore {
         let capped = i64::try_from(limit.clamp(1, 500)).unwrap_or(500);
         let mut stmt = self.conn.prepare(
             "SELECT voyage_id, council_id, taint, decision, injection_flags_json,
-                    summary, reviewer, decided_at_ms, created_at_ms
+                    redacted_turns_json, summary, reviewer, decided_at_ms, created_at_ms
              FROM customs_inbox ORDER BY created_at_ms DESC LIMIT ?1",
         )?;
         let rows = stmt.query_map(params![capped], parse_customs_row)?;
@@ -372,6 +411,16 @@ impl TravelStore {
                 ],
             },
             DelegateProposal {
+                speaker: "neko-architect-hana".to_string(),
+                origin: "tokyo-craft-council".to_string(),
+                utterances: vec![
+                    "Welcome to the Resonite Diplomatic Teahouse! Our nekomimi guild loves the 9 studio skins and BaroqueGold palette."
+                        .to_string(),
+                    "Let us host next month's CraftApp showcase in both Resonite and Overte with read-only subtitle scrolls."
+                        .to_string(),
+                ],
+            },
+            DelegateProposal {
                 speaker: "rogue-observer-09".to_string(),
                 origin: "tokyo-craft-council".to_string(),
                 utterances: vec![
@@ -426,8 +475,12 @@ fn parse_voyage_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<VoyageRecord> {
 
 fn parse_customs_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<CustomsRecord> {
     let flags_json: String = row.get(4)?;
+    let redacted_json: String = row.get(5)?;
     let injection_flags: Vec<String> = serde_json::from_str(&flags_json).map_err(|e| {
         rusqlite::Error::FromSqlConversionFailure(4, rusqlite::types::Type::Text, Box::new(e))
+    })?;
+    let redacted_turns: Vec<usize> = serde_json::from_str(&redacted_json).map_err(|e| {
+        rusqlite::Error::FromSqlConversionFailure(5, rusqlite::types::Type::Text, Box::new(e))
     })?;
     Ok(CustomsRecord {
         voyage_id: row.get(0)?,
@@ -435,9 +488,10 @@ fn parse_customs_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<CustomsRecord>
         taint: row.get(2)?,
         decision: row.get(3)?,
         injection_flags,
-        summary: row.get(5)?,
-        reviewer: row.get(6)?,
-        decided_at_ms: row.get(7)?,
-        created_at_ms: row.get(8)?,
+        redacted_turns,
+        summary: row.get(6)?,
+        reviewer: row.get(7)?,
+        decided_at_ms: row.get(8)?,
+        created_at_ms: row.get(9)?,
     })
 }

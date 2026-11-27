@@ -4,6 +4,7 @@ pub mod bus;
 pub mod council;
 pub mod proto;
 pub mod skills;
+pub mod stage;
 pub mod store;
 pub mod waystation;
 

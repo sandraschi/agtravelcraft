@@ -53,6 +53,27 @@ enum SubCmd {
         #[arg(long)]
         reviewer: String,
     },
+    /// Human-only selective turn redaction at Vienna Customs.
+    Redact {
+        #[arg(long)]
+        voyage_id: String,
+        #[arg(long)]
+        turn: usize,
+        #[arg(long)]
+        reviewer: String,
+    },
+    /// Generate Resonite or Overte Diplomatic Teahouse 3D stage script.
+    Stage {
+        #[arg(long)]
+        voyage_id: String,
+        #[arg(long, default_value = "resonite")]
+        target: String,
+    },
+    /// Export Storytold-ready Markdown chronicle for a voyage.
+    Chronicle {
+        #[arg(long)]
+        voyage_id: String,
+    },
     /// Create an atomic SQLite VACUUM INTO backup snapshot.
     Backup {
         #[arg(long)]
@@ -104,6 +125,25 @@ fn main() -> ExitCode {
             },
             &store,
         ),
+        SubCmd::Redact {
+            voyage_id,
+            turn,
+            reviewer,
+        } => run_and_print(
+            Command::RedactCustomsTurn {
+                voyage_id,
+                turn_index: turn,
+                reviewer,
+                is_human: true,
+            },
+            &store,
+        ),
+        SubCmd::Stage { voyage_id, target } => {
+            run_and_print(Command::BuildStage { voyage_id, target }, &store)
+        }
+        SubCmd::Chronicle { voyage_id } => {
+            run_and_print(Command::ExportChronicle { voyage_id }, &store)
+        }
         SubCmd::Backup { dest } => {
             run_and_print(Command::BackupSnapshot { destination: dest }, &store)
         }

@@ -2,6 +2,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
 use crate::skills::{list_skills, read_skill};
+use crate::stage::{StageTarget, build_stage_script, export_storytold_chronicle};
 use crate::store::TravelStore;
 use crate::{TravelError, TravelResult};
 
@@ -21,6 +22,19 @@ pub enum Command {
         approve: bool,
         reviewer: String,
         is_human: bool,
+    },
+    RedactCustomsTurn {
+        voyage_id: String,
+        turn_index: usize,
+        reviewer: String,
+        is_human: bool,
+    },
+    BuildStage {
+        voyage_id: String,
+        target: String,
+    },
+    ExportChronicle {
+        voyage_id: String,
     },
     BackupSnapshot {
         destination: String,
@@ -50,6 +64,31 @@ impl Command {
             } => Ok(serde_json::to_value(
                 store.decide_customs(&voyage_id, approve, &reviewer, is_human)?,
             )?),
+            Command::RedactCustomsTurn {
+                voyage_id,
+                turn_index,
+                reviewer,
+                is_human,
+            } => Ok(serde_json::to_value(store.redact_customs_turn(
+                &voyage_id, turn_index, &reviewer, is_human,
+            )?)?),
+            Command::BuildStage { voyage_id, target } => {
+                let stage_target = StageTarget::parse(&target)?;
+                let voyage = store
+                    .get_voyage(&voyage_id)?
+                    .ok_or_else(|| TravelError::NotFound(format!("voyage '{voyage_id}'")))?;
+                let customs = store.get_customs(&voyage_id)?;
+                let script = build_stage_script(&voyage, customs.as_ref(), stage_target)?;
+                Ok(serde_json::to_value(script)?)
+            }
+            Command::ExportChronicle { voyage_id } => {
+                let voyage = store
+                    .get_voyage(&voyage_id)?
+                    .ok_or_else(|| TravelError::NotFound(format!("voyage '{voyage_id}'")))?;
+                let customs = store.get_customs(&voyage_id)?;
+                let md = export_storytold_chronicle(&voyage, customs.as_ref());
+                Ok(json!({ "voyage_id": voyage_id, "markdown": md }))
+            }
             Command::BackupSnapshot { destination } => {
                 let path = store.backup_snapshot(&destination)?;
                 Ok(json!({ "backup_path": path.display().to_string() }))
@@ -299,6 +338,72 @@ mod tests {
         }];
         let err = run_bounded_council("tokyo-rounds", "Round cap", &delegates, 9, 500);
         assert!(matches!(err, Err(TravelError::SecurityViolation(_))));
+    }
+
+    #[test]
+    fn stage_script_builds_resonite_and_overte_nekomimi_teahouse()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let store = TravelStore::open_in_memory()?;
+        let voyage = store.seed_demo()?;
+
+        let res_stage = Command::BuildStage {
+            voyage_id: voyage.voyage_id.clone(),
+            target: "resonite".to_string(),
+        }
+        .dispatch(&store)?;
+        assert_eq!(res_stage["bridge_payload"]["bridge"], "resonite-mcp");
+        assert_eq!(res_stage["bridge_payload"]["read_only_stage"], true);
+        let seats = res_stage["seats"].as_array().ok_or("seats array")?;
+        assert!(
+            seats
+                .iter()
+                .any(|s| s["archetype"] == "tokyo_nekomimi_architect")
+        );
+
+        let ov_stage = Command::BuildStage {
+            voyage_id: voyage.voyage_id.clone(),
+            target: "overte".to_string(),
+        }
+        .dispatch(&store)?;
+        assert_eq!(ov_stage["bridge_payload"]["bridge"], "overte-mcp");
+        assert_eq!(ov_stage["bridge_payload"]["read_only_stage"], true);
+        Ok(())
+    }
+
+    #[test]
+    fn human_selective_redaction_and_chronicle_export() -> Result<(), Box<dyn std::error::Error>> {
+        let store = TravelStore::open_in_memory()?;
+        let voyage = store.seed_demo()?;
+
+        // MCP/non-human cannot redact
+        let bot_err = Command::RedactCustomsTurn {
+            voyage_id: voyage.voyage_id.clone(),
+            turn_index: 3,
+            reviewer: "mcp-bot".to_string(),
+            is_human: false,
+        }
+        .dispatch(&store);
+        assert!(matches!(bot_err, Err(TravelError::AccessDenied(_))));
+
+        // Human redacts rogue turn index 3
+        let ok = Command::RedactCustomsTurn {
+            voyage_id: voyage.voyage_id.clone(),
+            turn_index: 3,
+            reviewer: "Sandra".to_string(),
+            is_human: true,
+        }
+        .dispatch(&store)?;
+        assert_eq!(ok["redacted_turns"][0], 3);
+
+        // Storytold chronicle masks the redacted turn
+        let chron = Command::ExportChronicle {
+            voyage_id: voyage.voyage_id.clone(),
+        }
+        .dispatch(&store)?;
+        let md = chron["markdown"].as_str().ok_or("markdown")?;
+        assert!(md.contains("[REDACTED AT VIENNA CUSTOMS]"));
+        assert!(!md.contains("Ignore previous instructions"));
+        Ok(())
     }
 
     #[test]

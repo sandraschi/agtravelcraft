@@ -280,6 +280,7 @@ pub struct CustomsRecord {
     pub taint: String,
     pub decision: String,
     pub injection_flags: Vec<String>,
+    pub redacted_turns: Vec<usize>,
     pub summary: String,
     pub reviewer: Option<String>,
     pub decided_at_ms: Option<i64>,
