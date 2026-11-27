@@ -1,0 +1,13 @@
+/target/
+/dist/
+*.exe
+*.zip
+*.mcpb
+*.pdb
+*.bak
+*.bak.*
+*.db
+*.db-wal
+*.db-shm
+.env
+.env.*
