@@ -1,0 +1,27 @@
+[package]
+name = "agtravelcraft-app"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[lints]
+workspace = true
+
+[lib]
+name = "agtravelcraft_app"
+path = "src/lib.rs"
+
+[[bin]]
+name = "agtravelcraft"
+path = "src/main.rs"
+
+[dependencies]
+agtravelcraft-core = { path = "../agtravelcraft-core" }
+serde.workspace = true
+serde_json.workspace = true
+chrono.workspace = true
+eframe.workspace = true
+egui.workspace = true
+egui_extras.workspace = true
